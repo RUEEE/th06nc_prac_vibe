@@ -1,0 +1,31 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "th06nc_test_overlay", "overlay\th06nc_test_overlay.vcxproj", "{629198D6-E121-4CF8-963F-36D9C4CC1042}"
+EndProject
+Project("{BC8A1FFA-BEE3-4634-8014-F334798102B3}") = "th06nc_test_launcher", "launcher\th06nc_test_launcher.vcxproj", "{7BE39EF1-18A6-471A-8731-F0476B8A864A}"
+	ProjectSection(ProjectDependencies) = postProject
+		{629198D6-E121-4CF8-963F-36D9C4CC1042} = {629198D6-E121-4CF8-963F-36D9C4CC1042}
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|x64 = Debug|x64
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{629198D6-E121-4CF8-963F-36D9C4CC1042}.Debug|x64.ActiveCfg = Debug|x64
+		{629198D6-E121-4CF8-963F-36D9C4CC1042}.Debug|x64.Build.0 = Debug|x64
+		{629198D6-E121-4CF8-963F-36D9C4CC1042}.Release|x64.ActiveCfg = Release|x64
+		{629198D6-E121-4CF8-963F-36D9C4CC1042}.Release|x64.Build.0 = Release|x64
+		{7BE39EF1-18A6-471A-8731-F0476B8A864A}.Debug|x64.ActiveCfg = Debug|x64
+		{7BE39EF1-18A6-471A-8731-F0476B8A864A}.Debug|x64.Build.0 = Debug|x64
+		{7BE39EF1-18A6-471A-8731-F0476B8A864A}.Release|x64.ActiveCfg = Release|x64
+		{7BE39EF1-18A6-471A-8731-F0476B8A864A}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
+
