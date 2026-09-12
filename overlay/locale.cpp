@@ -62,6 +62,32 @@ T RandomSpell(int number)
     return names[std::clamp(number, 1, 5) - 1];
 }
 
+const std::array<T, 19>& FakeShotSpellNames()
+{
+    static const std::array<T, 19> names = {
+        L("火符「火神之光」", "Fire Sign \"Agni Shine\"", "火符「アグニシャイン」"),
+        L("火符「火神之光 上级」", "Fire Sign \"Agni Shine High Level\"", "火符「アグニシャイン上級」"),
+        L("火符「火神之光辉」", "Fire Sign \"Agni Radiance\"", "火符「アグニレイディアンス」"),
+        L("木符「风灵角笛」", "Wood Sign \"Sylphy Horn\"", "木符「シルフィホルン」"),
+        L("木符「风灵角笛 上级」", "Wood Sign \"Sylphy Horn High Level\"", "木符「シルフィホルン上級」"),
+        L("木符「翠绿风暴」", "Wood Sign \"Green Storm\"", "木符「グリーンストーム」"),
+        L("土符「慵懒三石塔」", "Earth Sign \"Lazy Trilithon\"", "土符「レイジィトリリトン」"),
+        L("土符「慵懒三石塔 上级」", "Earth Sign \"Lazy Trilithon High Level\"", "土符「レイジィトリリトン上級」"),
+        L("土符「三石塔的震动」", "Earth Sign \"Trilithon Shake\"", "土符「トリリトンシェイク」"),
+        L("水符「水精公主」", "Water Sign \"Princess Undine\"", "水符「プリンセスウンディネ」"),
+        L("水符「湖葬」", "Water Sign \"Bury In Lake\"", "水符「ベリーインレイク」"),
+        L("金符「金属疲劳」", "Metal Sign \"Metal Fatigue\"", "金符「メタルファティーグ」"),
+        L("金符「银龙」", "Metal Sign \"Silver Dragon\"", "金符「シルバードラゴン」"),
+        L("火&土符「环状熔岩带」", "Fire & Earth Sign \"Lava Cromlech\"", "火＆土符「ラーヴァクロムレク」"),
+        L("水&木符「水之精灵」", "Water & Wood Sign \"Water Elf\"", "水＆木符「ウォーターエルフ」"),
+        L("木&火符「森林大火」", "Wood & Fire Sign \"Forest Blaze\"", "木＆火符「フォレストブレイズ」"),
+        L("土&金符「翡翠巨石」", "Earth & Metal Sign \"Emerald Megalith\"", "土＆金符「エメラルドメガリス」"),
+        L("金&水符「水银之毒」", "Metal & Water Sign \"Mercury Poison\"", "金＆水符「マーキュリポイズン」"),
+        L("随机体变化符卡", "Randomized Variation Spell", "ランダム変化スペル"),
+    };
+    return names;
+}
+
 } // namespace
 
 Locale& Locale::Instance()
@@ -90,7 +116,34 @@ Locale::Locale()
         {LocaleText::ProcessId, L("进程 ID：%lu", "Process ID: %lu", "プロセス ID：%lu")},
         {LocaleText::F10Hint, L("F10：打开 / 关闭全屏面板", "F10: open / close this full-screen panel", "F10：全画面パネルを開く / 閉じる")},
         {LocaleText::ShowDemo, L("显示 ImGui 演示窗口", "Show ImGui demo", "ImGuiデモを表示")},
-        {LocaleText::AutoShoot, L("自动射击（V；Shift+D 开启）", "Auto shoot (V; Shift+D to enable)", "自動ショット（V、Shift+Dで有効化）")},
+        {LocaleText::AutoShoot, L("自动射击（Shift+D 开启）", "Auto shoot (Shift+D to enable)", "自動ショット（Shift+Dで有効化）")},
+        {LocaleText::KeyBindings, L("键位设置", "Key bindings", "キー設定")},
+        {LocaleText::KeyUp, L("上", "Up", "上")},
+        {LocaleText::KeyDown, L("下", "Down", "下")},
+        {LocaleText::KeyLeft, L("左", "Left", "左")},
+        {LocaleText::KeyRight, L("右", "Right", "右")},
+        {LocaleText::KeySlow, L("低速", "Focus", "低速")},
+        {LocaleText::KeyShoot, L("射击", "Shoot", "ショット")},
+        {LocaleText::KeyBomb, L("丢雷", "Bomb", "ボム")},
+        {LocaleText::ReimuA, L("梦A", "Reimu A", "霊夢A")},
+        {LocaleText::ReimuB, L("梦B", "Reimu B", "霊夢B")},
+        {LocaleText::MarisaA, L("魔A", "MarisaA", "魔理沙A")},
+        {LocaleText::MarisaB, L("魔B", "MarisaB", "魔理沙B")},
+        {LocaleText::KeySkip, L("跳过", "Skip", "スキップ")},
+        {LocaleText::KeyAutoShoot, L("自动射击切换", "Toggle auto shoot", "自動ショット切替")},
+        {LocaleText::KeyRetry, L("重试", "Retry", "リトライ")},
+        {LocaleText::KeyExit, L("退出", "Exit", "終了")},
+        {LocaleText::KeyConfirm, L("确认", "Confirm", "決定")},
+        {LocaleText::ArrowKeyPreset, L("设定成上下左右按键", "Use arrow-key preset", "矢印キープリセット")},
+        {LocaleText::WasdKeyPreset, L("设定成 WASD 按键", "Use WASD preset", "WASDプリセット")},
+        {LocaleText::SocdMode, L("SOCD", "SOCD", "SOCD")},
+        {LocaleText::SocdNone, L("不进行 SOCD（游戏原始处理）", "No SOCD (game handling)", "SOCDなし（ゲーム処理）")},
+        {LocaleText::SocdLastInput, L("后覆盖", "Last input wins", "後入力優先")},
+        {LocaleText::SocdFirstInput, L("前覆盖", "First input wins", "先入力優先")},
+        {LocaleText::SocdNeutral, L("回中", "Neutral", "ニュートラル")},
+        {LocaleText::CurrentKey, L("当前：%s", "Current: %s", "現在：%s")},
+        {LocaleText::ChooseKey, L("选择按键", "Choose key", "キーを選択")},
+        {LocaleText::PressAKey, L("请点击按键…", "Press a key...", "キーを押してください…")},
         {LocaleText::ShowHitboxes, L("显示判定点（仅练习模式）", "Show hitboxes (Practice only)", "当たり判定表示（練習のみ）")},
         {LocaleText::ApplyStretch, L("应用拉伸模式", "Apply stretch mode", "引き伸ばしモードを適用")},
         {LocaleText::StretchHelp, L("以右侧为锚点进行 4:3 水平放大；练习器 UI 不拉伸。", "Horizontal 4:3 zoom, anchored to the right edge; overlay UI is unchanged.", "右端を基準に4:3で水平拡大します。練習UIは変形しません。")},
@@ -100,10 +153,19 @@ Locale::Locale()
         {LocaleText::LockLives, L("[F2] 锁残", "[F2] Lock lives", "[F2] 残機固定")},
         {LocaleText::LockBombs, L("[F3] 锁Bomb", "[F3] Lock bombs", "[F3] ボム固定")},
         {LocaleText::LockPower, L("[F4] 锁Power", "[F4] Lock power", "[F4] パワー固定")},
-        {LocaleText::AutoBomb, L("[F5] 自动Bomb", "[F5] Auto bomb", "[F5] オートボム")},
-        {LocaleText::EverlastingBgm, L("[F6] 永续BGM", "[F6] Persistent BGM", "[F6] BGM継続")},
-        {LocaleText::DisableBomb, L("[F7] 禁止丢B", "[F7] Disable bomb", "[F7] ボム禁止")},
+        {LocaleText::LockTime, L("[F5] 锁时", "[F5] Lock time", "[F5] 時間固定")},
+        {LocaleText::AutoBomb, L("[F6] 自动Bomb", "[F6] Auto bomb", "[F6] オートボム")},
+        {LocaleText::EverlastingBgm, L("[F7] 永续BGM", "[F7] Persistent BGM", "[F7] BGM継続")},
+        {LocaleText::DisableBomb, L("[F8] 禁止丢B", "[F8] Disable bomb", "[F8] ボム禁止")},
         {LocaleText::PatchUnsupported, L("当前游戏版本不支持部分补丁", "Some patches are unsupported by this executable", "この実行ファイルでは一部のパッチを使用できません")},
+        {LocaleText::PauseMenu, L("练习暂停", "Practice Pause", "練習ポーズ")},
+        {LocaleText::Resume, L("继续游戏（Esc）", "Resume (Esc)", "再開（Esc）")},
+        {LocaleText::Restart, L("重新开始（R）", "Restart (R)", "リスタート（R）")},
+        {LocaleText::SaveReplayAndExit, L("保存录像并退出", "Save replay and exit", "リプレイを保存して終了")},
+        {LocaleText::ExitWithoutReplay, L("直接退出（Esc+Q）", "Exit without replay (Esc+Q)", "リプレイを保存せず終了（Esc+Q）")},
+        {LocaleText::ReplaySaveHint, L("退出后将进入游戏原生录像保存确认。", "After exiting, the native replay-save confirmation will open.", "終了後、ゲーム標準のリプレイ保存確認が開きます。")},
+        {LocaleText::ReplayFileHint, L("练习参数保存在同一个 .rpy 文件中。", "Practice parameters are stored in the same .rpy file.", "練習パラメータは同じ.rpyファイルに保存されます。")},
+        {LocaleText::ReplayHook, L("练习录像 Hook：%s", "Practice replay hook: %s", "練習リプレイHook：%s")},
         {LocaleText::PracticeSetup, L("练习设置", "Practice Setup", "練習設定")},
         {LocaleText::Mode, L("模式", "Mode", "モード")},
         {LocaleText::Original, L("原版练习", "Original", "通常練習")},
@@ -142,6 +204,10 @@ Locale::Locale()
         {LocaleText::Graze, L("擦弹", "Graze", "グレイズ")},
         {LocaleText::Point, L("蓝点", "Point", "点アイテム")},
         {LocaleText::FakeShot, L("自机伪装", "Fake Shot", "ショット偽装")},
+        {LocaleText::Raging495, L("发狂495", "Raging 495", "495年発狂")},
+        {LocaleText::DefaultPattern, L("默认", "Default", "デフォルト")},
+        {LocaleText::FastPattern, L("快速", "Fast", "高速")},
+        {LocaleText::SlowPattern, L("慢速", "Slow", "低速")},
         {LocaleText::Stage4Books, L("四面魔法书设置", "Stage 4 Books", "4面魔導書設定")},
         {LocaleText::Fixed, L("固定", "Fixed", "固定")},
         {LocaleText::MirrorLastThree, L("对称后三本", "Mirror last 3", "後半3冊を対称")},
@@ -152,7 +218,7 @@ Locale::Locale()
         {LocaleText::CopyBookConfig, L("复制配置到剪贴板", "Copy settings", "設定をコピー")},
         {LocaleText::PasteBookConfig, L("从剪贴板粘贴", "Paste settings", "設定を貼り付け")},
         {LocaleText::Start, L("开始（Z）", "Start (Z)", "開始（Z）")},
-        {LocaleText::NavigationHelp, L("上下：选择  |  左右：修改  |  Z：开始", "Up/Down: Select  |  Left/Right: Change  |  Z: Start", "上下：選択  |  左右：変更  |  Z：開始")},
+        {LocaleText::NavigationHelp, L("上下：选择  |  左右：修改  |  确认：开始", "Up/Down: Select  |  Left/Right: Change  |  Confirm: Start", "上下：選択  |  左右：変更  |  決定：開始")},
         {LocaleText::JumpHook, L("练习跳转 Hook：%s", "Practice jump hook: %s", "練習移動Hook：%s")},
         {LocaleText::WarpHelp, L("跳转已启用；资源与特殊设置字段仅用于增强练习。", "Warp is active; resource and special-setting fields apply to Enhanced mode only.", "移動機能は有効です。リソースと特殊設定は拡張練習にのみ適用されます。")},
         {LocaleText::StatusActive, L("已启用", "active", "有効")},
@@ -314,24 +380,25 @@ const char* Locale::GetJump(int key, int difficulty, int fakeShot) const
         key == TH06NC_ST4_BOSS3)
         return GetJump(key, difficulty);
 
-    static const T fire1 = L("火符「火神之光」", "Fire Sign \"Agni Shine\"", "火符「アグニシャイン」");
-    static const T fire2 = L("火符「火神之光 上级」", "Fire Sign \"Agni Shine High Level\"", "火符「アグニシャイン上級」");
-    static const T fire3 = L("火符「火神之光辉」", "Fire Sign \"Agni Radiance\"", "火符「アグニレイディアンス」");
-    static const T wood1 = L("木符「风灵角笛」", "Wood Sign \"Sylphy Horn\"", "木符「シルフィホルン」");
-    static const T wood2 = L("木符「风灵角笛 上级」", "Wood Sign \"Sylphy Horn High Level\"", "木符「シルフィホルン上級」");
-    static const T wood3 = L("木符「翠绿风暴」", "Wood Sign \"Green Storm\"", "木符「グリーンストーム」");
-    static const T earth1 = L("土符「慵懒三石塔」", "Earth Sign \"Lazy Trilithon\"", "土符「レイジィトリリトン」");
-    static const T earth2 = L("土符「慵懒三石塔 上级」", "Earth Sign \"Lazy Trilithon High Level\"", "土符「レイジィトリリトン上級」");
-    static const T earth3 = L("土符「三石塔的震动」", "Earth Sign \"Trilithon Shake\"", "土符「トリリトンシェイク」");
-    static const T water1 = L("水符「水精公主」", "Water Sign \"Princess Undine\"", "水符「プリンセスウンディネ」");
-    static const T water2 = L("水符「湖葬」", "Water Sign \"Bury In Lake\"", "水符「ベリーインレイク」");
-    static const T metal1 = L("金符「金属疲劳」", "Metal Sign \"Metal Fatigue\"", "金符「メタルファティーグ」");
-    static const T metal2 = L("金符「银龙」", "Metal Sign \"Silver Dragon\"", "金符「シルバードラゴン」");
-    static const T fireEarth = L("火&土符「环状熔岩带」", "Fire & Earth Sign \"Lava Cromlech\"", "火＆土符「ラーヴァクロムレク」");
-    static const T waterWood = L("水&木符「水之精灵」", "Water & Wood Sign \"Water Elf\"", "水＆木符「ウォーターエルフ」");
-    static const T woodFire = L("木&火符「森林大火」", "Wood & Fire Sign \"Forest Blaze\"", "木＆火符「フォレストブレイズ」");
-    static const T earthMetal = L("土&金符「翡翠巨石」", "Earth & Metal Sign \"Emerald Megalith\"", "土＆金符「エメラルドメガリス」");
-    static const T metalWater = L("金&水符「水银之毒」", "Metal & Water Sign \"Mercury Poison\"", "金＆水符「マーキュリポイズン」");
+    const auto& fakeShotNames = FakeShotSpellNames();
+    const T& fire1 = fakeShotNames[0];
+    const T& fire2 = fakeShotNames[1];
+    const T& fire3 = fakeShotNames[2];
+    const T& wood1 = fakeShotNames[3];
+    const T& wood2 = fakeShotNames[4];
+    const T& wood3 = fakeShotNames[5];
+    const T& earth1 = fakeShotNames[6];
+    const T& earth2 = fakeShotNames[7];
+    const T& earth3 = fakeShotNames[8];
+    const T& water1 = fakeShotNames[9];
+    const T& water2 = fakeShotNames[10];
+    const T& metal1 = fakeShotNames[11];
+    const T& metal2 = fakeShotNames[12];
+    const T& fireEarth = fakeShotNames[13];
+    const T& waterWood = fakeShotNames[14];
+    const T& woodFire = fakeShotNames[15];
+    const T& earthMetal = fakeShotNames[16];
+    const T& metalWater = fakeShotNames[17];
 
     const bool easy = difficulty == 0;
     const bool normal = difficulty == 1;
@@ -380,4 +447,21 @@ const char* Locale::GetJump(int key, int difficulty, int fakeShot) const
         break;
     }
     return selected ? Select(*selected) : GetJump(key, difficulty);
+}
+
+void Locale::AppendAllGlyphText(std::string& output) const
+{
+    const auto append = [&](const LocalizedText& text) {
+        output.append(text.chinese).push_back('\n');
+        output.append(text.english).push_back('\n');
+        output.append(text.japanese).push_back('\n');
+    };
+
+    for (const auto& entry : text_)
+        append(entry.second);
+    for (const auto& entry : jumps_)
+        for (const LocalizedText& text : entry.second)
+            append(text);
+    for (const LocalizedText& text : FakeShotSpellNames())
+        append(text);
 }

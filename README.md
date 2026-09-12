@@ -4,10 +4,33 @@
 
 # th06nc_prac_vibe
 
-**版本 / Version:** 0.2.3  
+**版本 / Version:** 0.3.0
 **作者 / Author:** RUEEE (GPT used)
 
 [中文](#中文说明) | [English](#english)
+
+## 更新日志 / Changelog
+
+### 0.3.0 — 2026-09-12（9.12）
+
+- 重构练习配置与 ECL 跳转请求，使用 `PracticeParam`、命名 replay 字段和
+  非 atomic 的结构化状态。
+- 增强练习 replay 改为在单个 `.rpy` trailer 中保存 UTF-8
+  `name=value` 字段，并加入按实际使用功能计算的兼容协议。
+- 完善 ESC 暂停菜单、循环导航、鼠标 hover、滚动，以及练习配置的即时修改。
+- 新增 `TH06NC_ST5_BOSS6` 默认/快速/慢速模式，并修正对应 Sub62 跳转时间。
+- 完善练习 replay 保存、读取和自动恢复跳转及初始资源的流程。
+
+- Refactored practice parameters and ECL jump requests into structured,
+  non-atomic state backed by `PracticeParam`.
+- Practice replays now store UTF-8 `name=value` fields in the single `.rpy`
+  trailer, with compatibility protocol selection based on features in use.
+- Improved the ESC pause menu, cyclic navigation, mouse hover, scrolling, and
+  live editing of practice settings.
+- Added Default/Fast/Slow modes for `TH06NC_ST5_BOSS6` by patching the relevant
+  Sub62 jump-time operands.
+- Improved practice replay saving, loading, warp restoration, and initial
+  resource restoration.
 
 ## 中文说明
 
@@ -24,7 +47,7 @@ Steam 可执行文件；游戏更新后地址或指令可能变化，此时相�
 
 - 替换原版 Practice 选择界面，并保留原版菜单背景、音效和进入游戏的转场。
 - 原版练习和增强练习均可跳过额外的二次确认界面。
-- 方向键上下选择项目，左右修改 Combo/数值，Z 键开始；同时支持鼠标操作。
+- 通过游戏逻辑输入的上下选择项目、左右修改 Combo/数值、确认进入；键盘自定义映射和手柄均可用，同时支持鼠标。
 - UI 输入值在游戏进程存活期间持续保存，关闭并重新打开界面不会重置。
 - 自动使用进入菜单前已经选择的难度，不再显示重复的难度或 Rank 选项。
 - 保存主线难度；进入 Extra 后再返回其他面不会残留 Extra 难度。
@@ -40,6 +63,7 @@ Steam 可执行文件；游戏更新后地址或指令可能变化，此时相�
 - 支持是否保留 Boss 前对话。
 - 支持 Stage 4 Patchouli 的自机类型伪装（Fake Shot）。
 - Stage 4 第四道中支持六本魔法书的 X/Y 固定、镜像、轮换、随机化以及剪贴板复制/粘贴。
+- Extra 的 `QED「495年的波纹」` 可选“发狂495”，直接从最后阶段开始。
 
 ECL 修改前会验证关卡、文件大小和内容指纹，避免把某一面的偏移写入错误脚本。
 
@@ -59,7 +83,8 @@ ECL 修改前会验证关卡、文件大小和内容指纹，避免把某一面�
 - 界面按窗口高度自动缩放，以 1440 高度对应 2.5x 为基准。
 - 中文、英文、日文切换；默认语言根据系统代码页选择。
 - 显示统一版本号和默认折叠的许可证/第三方声明。
-- 自动射击：V 切换，真实 Z/X/V 操作取消；`Shift+D` 可开启功能。
+- 自动射击：V 切换，按下当前绑定的射击/Bomb 键或 V 取消；`Shift+D` 可开启功能。
+- 可在 F10 中分别重绑上、下、左、右、低速、射击和 Bomb；支持下拉列表与“选择按键”直接捕获。
 - 自动射击时左上角显示 `A`，其逻辑输入可正常写入 Replay。
 - 仅练习模式可开启判定显示，包含弹幕、矩形判定、自机判定和旋转激光判定。
 - 可调整游戏 FPS/速度。
@@ -67,13 +92,24 @@ ECL 修改前会验证关卡、文件大小和内容指纹，避免把某一面�
 
 #### Backspace 辅助菜单
 
+- 窗口位于右上角，以只读热键列表显示状态；已开启项目显示为绿色。
 - **F1 无敌：**阻止弹幕和激光碰撞把 Player State 写成 DIE。
 - **F2 锁残：**只在残机已经为 0 时阻止疮痍，0 残之前保持原版体验。
 - **F3 锁 Bomb：**允许正常释放 Bomb，但不减少 Bomb 数量。
 - **F4 锁 Power：**阻止死亡流程中的多处 Power 减少写入。
-- **F5 自动 Bomb：**在原版允许决死的模式中跳过 X 键边沿判断，直接进入原生决死分支；不伪造 Replay 输入。
-- **F6 永续 BGM：**增强练习暂停和重开时保持 BGM 播放位置，退出练习后恢复原版行为。
-- **F7 禁止丢 B：**仅移除实时游戏的 Bomb 逻辑输入，不影响菜单 X 键，也不影响 Replay 中已有的 Bomb。
+- **F5 锁时：**冻结 timeline 与活动敌人的局部计时器，并保留道中 Boss 登场所需的 timeline 例外。
+- **F6 自动 Bomb：**在原版允许决死的模式中跳过 X 键边沿判断，直接进入原生决死分支；不伪造 Replay 输入。
+- **F7 永续 BGM：**使用游戏原生 `KeepBgm` 重开机制保持增强练习 BGM；退出练习时清除标志。
+- **F8 禁止丢 B：**仅移除实时游戏的 Bomb 逻辑输入，不影响菜单按键及 Replay 内已有的 Bomb。
+
+#### ESC 与练习录像
+
+- 增强练习中按 Esc 打开独立暂停菜单，可继续、重新开始、退出并进入原生录像保存确认，或跳过保存直接退出。
+- 暂停菜单支持方向键与 Z，也可直接按 Esc、R；`Esc+Q` 直接退出且不进入录像保存界面。
+- 增强练习保存时只生成一个 `.rpy`；练习参数以带版本和摘要校验的 trailer 附加在同一文件末尾。
+- trailer 只记录练习选择界面的跳转、初始资源、Fake Shot 和魔法书参数。Backspace 菜单的 F1–F8 状态不保存、不恢复。
+- 从游戏原生 Replay 菜单加载该 `.rpy` 时自动恢复练习参数。增强练习录像不保证脱离本练习器后可由原版游戏播放。
+- 普通游戏、原版练习和原生符卡练习的录像不会附加 trailer，保持原版 `.rpy` 格式和兼容性。
 
 #### 判定与画面工具
 
@@ -127,6 +163,9 @@ msbuild .\th06nc_test.sln /m /p:Configuration=Release /p:Platform=x64
 本项目的练习菜单思路、部分游戏功能设计以及多处 TH06 逆向方向参考了 thprac
 的开源实现。thprac 的版权归 Ack 及其贡献者所有。
 
+ESC 暂停与练习录像元数据流程还参考了
+[zxxsmart/thprac-th06nc](https://github.com/zxxsmart/thprac-th06nc) 的 Steam 新典适配。
+
 界面使用 [Dear ImGui](https://github.com/ocornut/imgui)，其采用 MIT License；
 ImGui 所带 stb 组件按 MIT License 或 Public Domain 提供。完整声明见
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和
@@ -155,7 +194,8 @@ or data and make individual hooks unavailable.
 - Replaces the native Practice selector while retaining its background,
   sounds, fade, and stage-loading flow.
 - Skips the redundant confirmation screen for both Original and Enhanced modes.
-- Supports keyboard navigation (Up/Down, Left/Right, Z) and mouse input.
+- Reads the game's logical Up/Down/Left/Right/Confirm actions, so custom key
+  bindings and controllers work alongside mouse input.
 - Keeps all entered values for the lifetime of the game process, even when the
   window is closed and reopened.
 - Uses the difficulty selected before entering Practice; there is no duplicate
@@ -175,6 +215,8 @@ Nonspell, Spell, and Frame.
 - Stage 4 supports Patchouli fake-shot routing.
 - Stage 4 chapter 4 supports fixed positions for six books, mirroring,
   rotation, randomization, and validated clipboard copy/paste.
+- Extra `QED "Ripples of 495 Years"` has a Raging 495 option that starts
+  directly from its final phase.
 
 #### Practice-flow corrections
 
@@ -195,24 +237,57 @@ Nonspell, Spell, and Frame.
 - UI scaling follows window height, using 2.5x at 1440 pixels as the reference.
 - Chinese, English, and Japanese localization with system-code-page default.
 - Shared version display and a collapsed licenses/third-party section.
-- Auto-shoot toggled by V, with `Shift+D` enable shortcut and top-left `A`
-  indicator. Generated shooting remains replay-compatible.
+- Auto-shoot has a configurable toggle key (V by default), with `Shift+D`
+  enable shortcut and top-left `A` indicator. Generated shooting remains
+  replay-compatible.
+- F10 can independently rebind Up, Down, Left, Right, Focus, Shoot, Bomb, and
+  the auto-shoot toggle through a full keyboard list or direct "press a key"
+  capture. Arrow-key and WASD buttons restore the corresponding seven-key
+  gameplay presets without changing the auto-shoot toggle. Bindings and the
+  auto-shoot enabled state persist in
+  `%APPDATA%\\shanghaialice\\th06nc\\input.ini`.
+- Retry, direct-exit, and overlay-confirm shortcuts are also configurable
+  (defaults: R, Q, and Enter). Only keys named by the built-in VK-name map are
+  accepted; unsupported saved values fall back to the corresponding arrow-set
+  defaults. Left/right Shift and Ctrl are normalized to their generic keys.
+- Direction bindings support configurable SOCD handling: native/no filtering,
+  last-input priority, first-input priority, or neutral on opposites. The SOCD
+  selection is stored in the same input configuration.
 - Practice-only bullet, rectangle, player, and rotated-laser hitbox display.
 - Configurable FPS/game speed.
 - D3D11 right-anchored horizontal game stretch without stretching ImGui.
 
 #### Backspace helper menu
 
+- The top-right window is a read-only hotkey/status list; enabled entries are
+  highlighted in green, following the presentation used by the reference fork.
 - **F1 Invincible:** prevents bullet and laser collision from writing DIE state.
 - **F2 Lock lives:** prevents game over only after lives are already zero.
 - **F3 Lock Bombs:** preserves Bomb count while retaining native Bomb behavior.
 - **F4 Lock Power:** blocks all confirmed death-path power-loss stores.
-- **F5 Auto-Bomb:** enters the native deathbomb success branch in modes where
+- **F5 Lock Time:** freezes the timeline and active enemy-local timers while
+  retaining native midboss-introduction timeline exceptions.
+- **F6 Auto-Bomb:** enters the native deathbomb success branch in modes where
   the game itself permits deathbombing, without synthesizing replay input.
-- **F6 Persistent BGM:** preserves BGM and playback position across enhanced
-  Practice pause/restart and restores stock behavior on exit.
-- **F7 Disable Bomb:** suppresses only live logical Bomb input; menu X and
-  replayed Bombs remain functional.
+- **F7 Persistent BGM:** uses the game's native `KeepBgm` retry mechanism for
+  enhanced Practice and clears it on exit.
+- **F8 Disable Bomb:** removes only live logical Bomb input; menu controls and
+  Bomb actions already stored in replay playback remain available.
+
+#### ESC and practice replays
+
+- Esc opens an Enhanced-Practice pause menu with Resume, Restart, save-and-exit,
+  and direct exit without saving.
+- The menu supports Up/Down and Z, direct Esc/R shortcuts, and mouse input;
+  `Esc+Q` exits directly without opening the replay-save screen.
+- Enhanced Practice produces one `.rpy`; a versioned, digest-checked trailer
+  containing the Practice-selection warp, starting resources, Fake Shot, and
+  book settings is appended to that same file.
+- Backspace F1-F8 assist states are not serialized or restored.
+- Selecting the file in the native Replay menu restores the embedded Practice
+  data. Enhanced-Practice replays are not guaranteed to play without this tool.
+- Normal runs, Original Practice, and native Spell Practice retain the exact
+  native `.rpy` format and compatibility.
 
 #### Hitbox and rendering tools
 
@@ -274,4 +349,3 @@ and [third_party/imgui/LICENSE.txt](third_party/imgui/LICENSE.txt).
 Touhou Project, Embodiment of Scarlet Devil, and related assets belong to
 Team Shanghai Alice/ZUN. This project is not affiliated with or endorsed by
 Team Shanghai Alice, ZUN, Steam, or the game's publisher.
-

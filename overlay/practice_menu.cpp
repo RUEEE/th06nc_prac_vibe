@@ -5,12 +5,12 @@
 #include "keyboard_input.h"
 #include "locale.h"
 #include "practice_jump.h"
+#include "replay_support.h"
 #include "imgui.h"
 
 #include <windows.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -76,6 +76,10 @@ constexpr ptrdiff_t kStageToBossBgmFieldOffset = 0x80;
 constexpr ULONGLONG kMenuHeartbeatTimeoutMs = 350;
 constexpr int kMaximumKnownStageCount = 7;
 constexpr uint32_t kMenuConfirmMask = 0x100; // Z / menu-confirm bit.
+constexpr uint32_t kMenuUpMask = 0x10;
+constexpr uint32_t kMenuDownMask = 0x20;
+constexpr uint32_t kMenuLeftMask = 0x40;
+constexpr uint32_t kMenuRightMask = 0x80;
 constexpr uint32_t kNavigateUp = 1u << 0;
 constexpr uint32_t kNavigateDown = 1u << 1;
 constexpr uint32_t kNavigateLeft = 1u << 2;
@@ -95,34 +99,34 @@ NativeStageSelectorFn g_nativeStageSelector = nullptr;
 using NativePracticeMenuTransitionFn = void(__fastcall*)(void* menu, int nextState,
     int transitionFlag);
 NativePracticeMenuTransitionFn g_nativePracticeMenuTransition = nullptr;
-std::atomic<PracticeHookStatusValue> g_hookStatus{PracticeHookStatusValue::NotInstalled};
-std::atomic<std::byte*> g_menuObject{nullptr};
-std::atomic<ULONGLONG> g_lastMenuUpdateTick{0};
-std::atomic<int> g_selectedStage{0};
-std::atomic<int> g_originalDifficulty{0};
-std::atomic<bool> g_bypassNextPracticeConfirmation{false};
-std::atomic<bool> g_startRequested{false};
-std::atomic<int> g_practiceMode{1};
-std::atomic<int> g_warpTarget{0};
-std::atomic<int> g_selectedChapter{1};
-std::atomic<int> g_selectedTimelineFrame{0};
-std::atomic<JumpEnum> g_selectedBossJump{TH06NC_JUMP_NONE};
-std::atomic<bool> g_bossDialogue{true};
-std::atomic<uint32_t> g_navigationActions{0};
-std::atomic<bool> g_selectionInitialized{false};
-std::atomic<bool> g_enhancedSessionActive{false};
-std::atomic<bool> g_enhancedInitialLoadPending{false};
-std::atomic<bool> g_clearInitialPlayerStatePending{false};
-std::atomic<int> g_practiceLives{8};
-std::atomic<int> g_practiceBombs{8};
-std::atomic<int64_t> g_practiceScore{0};
-std::atomic<int> g_practicePower{128};
-std::atomic<int> g_practiceGraze{0};
-std::atomic<int> g_practicePointItems{0};
-std::atomic<int> g_fakeShot{0};
-std::atomic<unsigned> g_bookFixedMask{0x3f};
-std::atomic<int> g_bookX[6] = {-180, -116, -61, 41, 112, 180};
-std::atomic<int> g_bookY[6] = {32, 128, 144, 64, 80, 96};
+
+struct PracticeRuntime {
+    PracticeHookStatusValue hookStatus = PracticeHookStatusValue::NotInstalled;
+    std::byte* menuObject = nullptr;
+    ULONGLONG lastMenuUpdateTick = 0;
+    bool bypassNextPracticeConfirmation = false;
+    bool startRequested = false;
+    uint32_t navigationActions = 0;
+    bool selectionInitialized = false;
+    bool enhancedSessionActive = false;
+    bool enhancedInitialLoadPending = false;
+    bool enhancedRestartPending = false;
+    bool restartBgmCompatible = false;
+    int runningStage = 0;
+    bool runningBossBgm = false;
+    bool clearInitialPlayerStatePending = false;
+};
+
+PracticeParam g_practiceParam{};
+PracticeRuntime g_practiceRuntime{};
+
+template <typename T>
+T Exchange(T& target, T replacement)
+{
+    const T previous = target;
+    target = replacement;
+    return previous;
+}
 
 using PlayerInitializeFn = int(__fastcall*)(void* player);
 PlayerInitializeFn g_nativePlayerInitialize = nullptr;
@@ -166,7 +170,7 @@ bool BossTypeMatches(int filter, Bosstype type)
 
 bool IsActiveEnhancedPracticeRun()
 {
-    if (!g_enhancedSessionActive.load())
+    if (!g_practiceRuntime.enhancedSessionActive)
         return false;
     const auto* nativeSpellFlag =
         ResolveGameAddress<uint8_t>(GameAddress::NativeSpellPracticeFlag);
@@ -178,11 +182,11 @@ bool IsActiveEnhancedPracticeRun()
 
 bool IsMainBossJumpSelected()
 {
-    const int target = g_warpTarget.load();
+    const int target = g_practiceParam.warpTarget;
     if (target < 2 || target > 5)
         return false;
 
-    const JumpEnum selected = g_selectedBossJump.load();
+    const JumpEnum selected = static_cast<JumpEnum>(g_practiceParam.bossJump);
     const auto& jumps = BossJumps();
     const auto found = std::find_if(jumps.begin(), jumps.end(),
         [selected](const BossJump& jump) { return jump.jumpname == selected; });
@@ -211,7 +215,7 @@ uint8_t __fastcall ReadPlayerStateForDispatch(void* player)
     auto* bytes = static_cast<std::byte*>(player);
     auto* state = reinterpret_cast<uint8_t*>(bytes + kPlayerStateOffset);
     if (IsActiveEnhancedPracticeRun() &&
-        g_clearInitialPlayerStatePending.exchange(false)) {
+        Exchange(g_practiceRuntime.clearInitialPlayerStatePending, false)) {
         // The new executable can restore the entry state after its native
         // initialization. Correct it at the first following state dispatch,
         // then leave death/respawn and every later state transition untouched.
@@ -229,41 +233,40 @@ int __fastcall HookedStageBgmLoad(void* audioState, const char* stageBgmPath)
     const char* selectedPath = stageBgmPath;
     if (stageBgmPath && IsMainBossPracticeSelected())
         selectedPath += kStageToBossBgmFieldOffset;
-    const int64_t resumePosition =
-        BeginEverlastingBgmLoad(audioState, selectedPath);
-    const int result = g_nativeBgmLoad(audioState, selectedPath);
-    EndEverlastingBgmLoad(selectedPath, resumePosition);
-    return result;
+    return g_nativeBgmLoad(audioState, selectedPath);
 }
 
 void QueueConfiguredPracticeJump()
 {
-    const int stage = g_selectedStage.load() + 1;
-    if (g_warpTarget.load() == 1) {
+    const int stage = g_practiceParam.stage + 1;
+    if (g_practiceParam.warpTarget == 1) {
         const auto found = StageChapterTimes().find(stage);
         if (found != StageChapterTimes().end() && !found->second.empty()) {
-            const int chapter = std::clamp(g_selectedChapter.load(), 1,
+            const int chapter = std::clamp(g_practiceParam.chapter, 1,
                 static_cast<int>(found->second.size()));
             if (stage == 4 && chapter == 4) {
                 int x[6]{};
                 int y[6]{};
                 for (int book = 0; book < 6; ++book) {
-                    x[book] = g_bookX[book].load();
-                    y[book] = g_bookY[book].load();
+                    x[book] = g_practiceParam.bookX[book];
+                    y[book] = g_practiceParam.bookY[book];
                 }
                 QueueStage4BooksPracticeJump(found->second[chapter - 1],
-                    g_bookFixedMask.load(), x, y);
+                    g_practiceParam.bookFixedMask, x, y);
             } else {
                 QueueStagePracticeJump(stage, found->second[chapter - 1]);
             }
         }
-    } else if (g_warpTarget.load() >= 2 && g_warpTarget.load() <= 5 &&
-        g_selectedBossJump.load() != TH06NC_JUMP_NONE) {
-        QueueBossPracticeJump(stage, g_selectedBossJump.load(),
-            g_bossDialogue.load(), g_fakeShot.load());
-    } else if (g_warpTarget.load() == 6) {
+    } else if (g_practiceParam.warpTarget >= 2 &&
+        g_practiceParam.warpTarget <= 5 &&
+        g_practiceParam.bossJump != TH06NC_JUMP_NONE) {
+        QueueBossPracticeJump(stage,
+            static_cast<JumpEnum>(g_practiceParam.bossJump),
+            g_practiceParam.dialogue != 0, g_practiceParam.fakeShot,
+            g_practiceParam.stage5Boss6Mode);
+    } else if (g_practiceParam.warpTarget == 6) {
         QueueStagePracticeJump(stage,
-            std::max(g_selectedTimelineFrame.load(), 0));
+            std::max(g_practiceParam.timelineFrame, 0));
     }
 }
 
@@ -277,15 +280,15 @@ void ApplyConfiguredPracticeResources()
     auto* power = ResolveGameAddress<uint16_t>(GameAddress::CurrentPower);
     auto* graze = ResolveGameAddress<int32_t>(GameAddress::CurrentGraze);
     auto* pointItems = ResolveGameAddress<uint16_t>(GameAddress::CurrentPointItems);
-    if (lives) *lives = static_cast<uint8_t>(g_practiceLives.load());
-    if (bombs) *bombs = static_cast<uint8_t>(g_practiceBombs.load());
-    if (initialLives) *initialLives = static_cast<uint8_t>(g_practiceLives.load());
-    if (initialBombs) *initialBombs = static_cast<uint8_t>(g_practiceBombs.load());
-    if (score) *score = g_practiceScore.load();
-    if (power) *power = static_cast<uint16_t>(g_practicePower.load());
-    if (graze) *graze = g_practiceGraze.load();
+    if (lives) *lives = static_cast<uint8_t>(g_practiceParam.lives);
+    if (bombs) *bombs = static_cast<uint8_t>(g_practiceParam.bombs);
+    if (initialLives) *initialLives = static_cast<uint8_t>(g_practiceParam.lives);
+    if (initialBombs) *initialBombs = static_cast<uint8_t>(g_practiceParam.bombs);
+    if (score) *score = g_practiceParam.score;
+    if (power) *power = static_cast<uint16_t>(g_practiceParam.power);
+    if (graze) *graze = g_practiceParam.graze;
     if (pointItems)
-        *pointItems = static_cast<uint16_t>(g_practicePointItems.load());
+        *pointItems = static_cast<uint16_t>(g_practiceParam.pointItems);
 }
 
 uint8_t __fastcall ShouldPreAdvanceStageBackground()
@@ -347,9 +350,30 @@ void __fastcall HookedStageBackgroundFastForward()
 
 int __fastcall HookedPlayerInitialize(void* player)
 {
+    // ReplayPath and ReplayModeFlag are already populated before the common
+    // initializer. Restore the enhanced-practice parameters before any of its
+    // BGM/background decisions execute.
+    const bool restoredPracticeReplay = PreparePracticeReplayPlayback();
+    if (restoredPracticeReplay) {
+        if (auto* stage = ResolveGameAddress<int>(GameAddress::CurrentStage))
+            *stage = g_practiceParam.stage;
+        if (auto* difficulty =
+                ResolveGameAddress<int>(GameAddress::CurrentDifficulty))
+            *difficulty = g_practiceParam.stage == 6
+                ? 4 : std::clamp(g_practiceParam.difficulty, 0, 3);
+        if (auto* practice =
+                ResolveGameAddress<uint8_t>(GameAddress::PracticeModeFlag))
+            *practice = 1;
+        if (auto* spellPractice = ResolveGameAddress<uint8_t>(
+                GameAddress::NativeSpellPracticeFlag))
+            *spellPractice = 0;
+    }
     const bool initialEnhancedLoad =
-        g_enhancedInitialLoadPending.exchange(false);
-    if (g_enhancedSessionActive.load() && !initialEnhancedLoad) {
+        Exchange(g_practiceRuntime.enhancedInitialLoadPending, false);
+    const bool enhancedRestart =
+        Exchange(g_practiceRuntime.enhancedRestartPending, false);
+    if (g_practiceRuntime.enhancedSessionActive && !initialEnhancedLoad &&
+        !enhancedRestart) {
         const auto* practiceFlag =
             ResolveGameAddress<uint8_t>(GameAddress::PracticeModeFlag);
         const auto* nativeSpellFlag =
@@ -359,14 +383,36 @@ int __fastcall HookedPlayerInitialize(void* player)
         // never treated as enhanced.
         if ((practiceFlag && *practiceFlag == 0) ||
             (nativeSpellFlag && *nativeSpellFlag != 0)) {
-            g_enhancedSessionActive.store(false);
-            g_clearInitialPlayerStatePending.store(false);
+            g_practiceRuntime.enhancedSessionActive = false;
+            g_practiceRuntime.clearInitialPlayerStatePending = false;
         }
+    }
+
+    // Match the game's native practice-retry mechanism. KeepBgm must be set
+    // before the common initializer makes its audio teardown/load decision;
+    // first entry and every non-enhanced initialization explicitly clear it.
+    PrepareEverlastingBgmForInitialization(
+        g_practiceRuntime.enhancedSessionActive && enhancedRestart &&
+            g_practiceRuntime.restartBgmCompatible);
+
+    if (g_practiceRuntime.enhancedSessionActive && enhancedRestart) {
+        // State 12 may restore the old stage between the pause action and this
+        // callback. Reassert the edited selection immediately before native
+        // stage/ECL loading, and make the request visible to the earliest
+        // timeline callback created by that initialization.
+        if (auto* stage = ResolveGameAddress<int>(GameAddress::CurrentStage))
+            *stage = g_practiceParam.stage;
+        if (auto* difficulty =
+                ResolveGameAddress<int>(GameAddress::CurrentDifficulty))
+            *difficulty = g_practiceParam.stage == 6
+                ? 4 : std::clamp(g_practiceParam.difficulty, 0, 3);
+        ClearQueuedPracticeJump();
+        QueueConfiguredPracticeJump();
     }
 
     const int result = g_nativePlayerInitialize(player);
     if (result != 0) {
-        g_clearInitialPlayerStatePending.store(false);
+        g_practiceRuntime.clearInitialPlayerStatePending = false;
         return result;
     }
 
@@ -376,12 +422,18 @@ int __fastcall HookedPlayerInitialize(void* player)
         // and the in-game restart path through +0x3A810.
         ApplyConfiguredPracticeResources();
         QueueConfiguredPracticeJump();
-        g_clearInitialPlayerStatePending.store(true);
+        g_practiceRuntime.runningStage = g_practiceParam.stage;
+        g_practiceRuntime.runningBossBgm = IsMainBossJumpSelected();
+        CapturePracticeReplayStart();
+        g_practiceRuntime.clearInitialPlayerStatePending = true;
     } else {
         // A request normally gets consumed on the first timeline update. If
         // the player exits during the transition, discard it here before a
         // normal run or the game's own spell-practice ECL can see it.
-        g_clearInitialPlayerStatePending.store(false);
+        // For a non-replay normal/native-practice initialization this also
+        // clears any unsaved Enhanced-Practice replay snapshot.
+        CapturePracticeReplayStart();
+        g_practiceRuntime.clearInitialPlayerStatePending = false;
         ClearQueuedPracticeJump();
     }
     return result;
@@ -397,65 +449,47 @@ int __fastcall HookedPracticeMenuUi(void* rawMenu, int nativeStageCount)
         return 0;
 
     const ULONGLONG now = GetTickCount64();
-    const ULONGLONG previousTick = g_lastMenuUpdateTick.exchange(now);
-    std::byte* previousMenu = g_menuObject.exchange(menu);
+    const ULONGLONG previousTick =
+        Exchange(g_practiceRuntime.lastMenuUpdateTick, now);
+    std::byte* previousMenu = Exchange(g_practiceRuntime.menuObject, menu);
     const int stageCount = kMaximumKnownStageCount;
 
     if (previousMenu != menu || now - previousTick > kMenuHeartbeatTimeoutMs) {
-        g_navigationActions.store(0);
-        g_bypassNextPracticeConfirmation.store(false);
-        if (!g_selectionInitialized.exchange(true)) {
-            g_selectedStage.store(ClampStage(
-                MenuField<int>(menu, PracticeMenuField::SelectedStage), stageCount));
+        g_practiceRuntime.navigationActions = 0;
+        g_practiceRuntime.bypassNextPracticeConfirmation = false;
+        if (!Exchange(g_practiceRuntime.selectionInitialized, true)) {
+            g_practiceParam.stage = ClampStage(
+                MenuField<int>(menu, PracticeMenuField::SelectedStage), stageCount);
         }
         if (const auto* difficulty = ResolveGameAddress<int>(GameAddress::CurrentDifficulty);
             difficulty && *difficulty >= 0 && *difficulty <= 3) {
             // Stage 7 temporarily forces this global to Extra (4). Preserve
             // the last main-game difficulty instead of letting Extra leak
             // into the next stage selection and BossJump difficulty mask.
-            g_originalDifficulty.store(*difficulty);
+            g_practiceParam.difficulty = *difficulty;
         }
     }
 
-    // Arrow navigation belongs to the replacement menu.  Capture physical
-    // key edges here on the game update thread, then consume them during the
-    // next ImGui frame.  The native selector is still called for the menu's
-    // own timing/sound bookkeeping, but its stage change is discarded below.
-    static bool wasUp = false;
-    static bool wasDown = false;
-    static bool wasLeft = false;
-    static bool wasRight = false;
-    static ULONGLONG repeatUpAt = 0;
-    static ULONGLONG repeatDownAt = 0;
-    static ULONGLONG repeatLeftAt = 0;
-    static ULONGLONG repeatRightAt = 0;
-    auto keyRepeated = [&](bool down, bool& wasPressed, ULONGLONG& repeatAt) {
-        if (!down) {
-            wasPressed = false;
-            repeatAt = 0;
-            return false;
-        }
-        const bool fire = !wasPressed || now >= repeatAt;
-        if (fire)
-            repeatAt = now + (wasPressed ? 75 : 300);
-        wasPressed = true;
-        return fire;
-    };
-    const bool foreground = IsGameProcessForeground();
-    const bool up = foreground && (GetAsyncKeyState(VK_UP) & 0x8000) != 0;
-    const bool down = foreground && (GetAsyncKeyState(VK_DOWN) & 0x8000) != 0;
-    const bool left = foreground && (GetAsyncKeyState(VK_LEFT) & 0x8000) != 0;
-    const bool right = foreground && (GetAsyncKeyState(VK_RIGHT) & 0x8000) != 0;
+    // Consume the game's logical menu word, not physical virtual keys. This
+    // preserves the player's bindings and makes controller/D-pad navigation
+    // follow the exact same edge/repeat behavior as the native selector.
+    auto* current = ResolveGameAddress<uint32_t>(GameAddress::MenuInputCurrent);
+    auto* previous = ResolveGameAddress<uint32_t>(GameAddress::MenuInputPrevious);
+    const auto* repeat = ResolveGameAddress<uint16_t>(GameAddress::MenuInputRepeat);
     uint32_t navigation = 0;
-    if (keyRepeated(up, wasUp, repeatUpAt)) navigation |= kNavigateUp;
-    if (keyRepeated(down, wasDown, repeatDownAt)) navigation |= kNavigateDown;
-    if (keyRepeated(left, wasLeft, repeatLeftAt)) navigation |= kNavigateLeft;
-    if (keyRepeated(right, wasRight, repeatRightAt)) navigation |= kNavigateRight;
+    const auto logicalNavigation = [&](uint32_t mask) {
+        return current && previous && (*current & mask) != 0 &&
+            (((*current ^ *previous) & mask) != 0 || (repeat && *repeat != 0));
+    };
+    if (logicalNavigation(kMenuUpMask)) navigation |= kNavigateUp;
+    if (logicalNavigation(kMenuDownMask)) navigation |= kNavigateDown;
+    if (logicalNavigation(kMenuLeftMask)) navigation |= kNavigateLeft;
+    if (logicalNavigation(kMenuRightMask)) navigation |= kNavigateRight;
     if (navigation != 0)
-        g_navigationActions.fetch_or(navigation);
+        g_practiceRuntime.navigationActions |= navigation;
 
     MenuField<int>(menu, PracticeMenuField::SelectedStage) =
-        ClampStage(g_selectedStage.load(), stageCount);
+        ClampStage(g_practiceParam.stage, stageCount);
 
     // The code immediately following the patched CALL still owns Z/X handling,
     // fade timing, sound, and stage load.  Do not accept the native selector's
@@ -463,14 +497,12 @@ int __fastcall HookedPracticeMenuUi(void* rawMenu, int nativeStageCount)
     (void)nativeStageCount;
     const int result = g_nativeStageSelector(menu, kMaximumKnownStageCount);
     MenuField<int>(menu, PracticeMenuField::SelectedStage) =
-        ClampStage(g_selectedStage.load(), stageCount);
+        ClampStage(g_practiceParam.stage, stageCount);
 
     // The ImGui Start button injects the same confirm edge consumed directly
-    // after +0x4BFB2. A physical Z key naturally follows this same native path.
-    auto* current = ResolveGameAddress<uint32_t>(GameAddress::MenuInputCurrent);
-    auto* previous = ResolveGameAddress<uint32_t>(GameAddress::MenuInputPrevious);
+    // after +0x4BFB2. Every device mapped to logical Confirm follows this path.
     if (current && previous) {
-        if (g_startRequested.exchange(false)) {
+        if (Exchange(g_practiceRuntime.startRequested, false)) {
             *current |= kMenuConfirmMask;
             *previous &= ~kMenuConfirmMask;
         }
@@ -478,20 +510,24 @@ int __fastcall HookedPracticeMenuUi(void* rawMenu, int nativeStageCount)
             (*current & kMenuConfirmMask) != (*previous & kMenuConfirmMask);
         if (confirming) {
             if (auto* difficulty = ResolveGameAddress<int>(GameAddress::CurrentDifficulty)) {
-                *difficulty = g_selectedStage.load() == 6
+                *difficulty = g_practiceParam.stage == 6
                     ? 4
-                    : g_originalDifficulty.load();
+                    : g_practiceParam.difficulty;
             }
-            const bool enhanced = g_practiceMode.load() == 1;
-            g_enhancedSessionActive.store(enhanced);
-            g_enhancedInitialLoadPending.store(enhanced);
-            g_clearInitialPlayerStatePending.store(false);
+            const bool enhanced = g_practiceParam.practiceMode == 1;
+            g_practiceRuntime.enhancedSessionActive = enhanced;
+            g_practiceRuntime.enhancedInitialLoadPending = enhanced;
+            g_practiceRuntime.clearInitialPlayerStatePending = false;
             // Both Original and Enhanced selections use the replacement UI;
             // bypass the native second confirmation for either mode.
-            g_bypassNextPracticeConfirmation.store(true);
+            g_practiceRuntime.bypassNextPracticeConfirmation = true;
             ClearQueuedPracticeJump();
-            if (g_enhancedSessionActive.load())
+            if (g_practiceRuntime.enhancedSessionActive)
                 QueueConfiguredPracticeJump();
+            // Establish replay ownership before gameplay starts. The common
+            // initializer refreshes this snapshot after it has successfully
+            // applied the selected configuration.
+            CapturePracticeReplayStart();
         }
     }
     return result;
@@ -501,7 +537,8 @@ void __fastcall HookedPracticeConfirmTransition(
     void* rawMenu, int nextState, int transitionFlag)
 {
     auto* menu = static_cast<std::byte*>(rawMenu);
-    if (!menu || !g_bypassNextPracticeConfirmation.exchange(false)) {
+    if (!menu || !Exchange(
+            g_practiceRuntime.bypassNextPracticeConfirmation, false)) {
         if (g_nativePracticeMenuTransition)
             g_nativePracticeMenuTransition(rawMenu, nextState, transitionFlag);
         return;
@@ -1053,14 +1090,14 @@ bool PatchStageSelectorCall()
 
     auto* relay = static_cast<unsigned char*>(AllocateNearAddress(callSite, 32));
     if (!relay) {
-        g_hookStatus.store(PracticeHookStatusValue::AllocationFailed);
+        g_practiceRuntime.hookStatus = PracticeHookStatusValue::AllocationFailed;
         return false;
     }
     WriteAbsoluteJump(relay, reinterpret_cast<void*>(HookedPracticeMenuUi));
 
     DWORD oldRelayProtection = 0;
     if (!VirtualProtect(relay, 32, PAGE_EXECUTE_READ, &oldRelayProtection)) {
-        g_hookStatus.store(PracticeHookStatusValue::PatchFailed);
+        g_practiceRuntime.hookStatus = PracticeHookStatusValue::PatchFailed;
         VirtualFree(relay, 0, MEM_RELEASE);
         return false;
     }
@@ -1070,7 +1107,7 @@ bool PatchStageSelectorCall()
         (reinterpret_cast<intptr_t>(callSite) + 5);
     if (relative < std::numeric_limits<int32_t>::min() ||
         relative > std::numeric_limits<int32_t>::max()) {
-        g_hookStatus.store(PracticeHookStatusValue::PatchFailed);
+        g_practiceRuntime.hookStatus = PracticeHookStatusValue::PatchFailed;
         VirtualFree(relay, 0, MEM_RELEASE);
         return false;
     }
@@ -1078,7 +1115,7 @@ bool PatchStageSelectorCall()
     DWORD oldCallProtection = 0;
     if (!VirtualProtect(callSite, sizeof(kExpectedStageSelectorCall),
             PAGE_EXECUTE_READWRITE, &oldCallProtection)) {
-        g_hookStatus.store(PracticeHookStatusValue::PatchFailed);
+        g_practiceRuntime.hookStatus = PracticeHookStatusValue::PatchFailed;
         VirtualFree(relay, 0, MEM_RELEASE);
         return false;
     }
@@ -1146,7 +1183,7 @@ bool PatchPracticeConfirmTransitionCall()
 
 bool InstallPracticeMenuHook()
 {
-    if (g_hookStatus.load() == PracticeHookStatusValue::Installed)
+    if (g_practiceRuntime.hookStatus == PracticeHookStatusValue::Installed)
         return true;
     if (!IsGameAddressRangeValid(GameAddress::PracticeStageSelectorCall,
             sizeof(kExpectedStageSelectorCall)) ||
@@ -1176,7 +1213,8 @@ bool InstallPracticeMenuHook()
             sizeof(kExpectedPlayerStateDispatchRead)) ||
         !IsGameAddressRangeValid(GameAddress::PracticeStageScoreDrawCall,
             sizeof(kExpectedPracticeStageScoreDrawCall))) {
-        g_hookStatus.store(PracticeHookStatusValue::UnsupportedExecutable);
+        g_practiceRuntime.hookStatus =
+            PracticeHookStatusValue::UnsupportedExecutable;
         return false;
     }
     const auto* backgroundFastForward = ResolveGameAddress<unsigned char>(
@@ -1185,14 +1223,16 @@ bool InstallPracticeMenuHook()
         std::memcmp(backgroundFastForward,
             kExpectedStageBackgroundFastForwardPrologue,
             sizeof(kExpectedStageBackgroundFastForwardPrologue)) != 0) {
-        g_hookStatus.store(PracticeHookStatusValue::UnsupportedExecutable);
+        g_practiceRuntime.hookStatus =
+            PracticeHookStatusValue::UnsupportedExecutable;
         return false;
     }
     if (!PatchStageSelectorCall()) {
-        const PracticeHookStatusValue failure = g_hookStatus.load();
+        const PracticeHookStatusValue failure = g_practiceRuntime.hookStatus;
         if (failure != PracticeHookStatusValue::AllocationFailed &&
             failure != PracticeHookStatusValue::PatchFailed)
-            g_hookStatus.store(PracticeHookStatusValue::UnsupportedExecutable);
+            g_practiceRuntime.hookStatus =
+                PracticeHookStatusValue::UnsupportedExecutable;
         return false;
     }
     const bool confirmBypassInstalled = PatchPracticeConfirmTransitionCall();
@@ -1207,20 +1247,21 @@ bool InstallPracticeMenuHook()
     const bool stageTitleCheckInstalled = PatchStageTitlePracticeCheck();
     const bool playerEntryCheckInstalled = PatchPlayerEntryPracticeCheck();
     const bool playerStateDispatchInstalled = PatchPlayerStateDispatchRead();
-    g_hookStatus.store(confirmBypassInstalled && nativeUiSuppressionInstalled &&
+    g_practiceRuntime.hookStatus =
+        confirmBypassInstalled && nativeUiSuppressionInstalled &&
             playerInitializeInstalled && stageBgmLoadInstalled &&
             stageBackgroundPathInstalled && stageBackgroundSpecialInstalled &&
             spellPracticeGuiInstalled && stageTitleCheckInstalled &&
             playerEntryCheckInstalled &&
             playerStateDispatchInstalled
         ? PracticeHookStatusValue::Installed
-        : PracticeHookStatusValue::StageUiOnly);
+        : PracticeHookStatusValue::StageUiOnly;
     return true;
 }
 
 const char* PracticeMenuHookStatus()
 {
-    switch (g_hookStatus.load()) {
+    switch (g_practiceRuntime.hookStatus) {
     case PracticeHookStatusValue::Installed: return S(StatusActive);
     case PracticeHookStatusValue::StageUiOnly:
         return S(StatusPracticePartial);
@@ -1235,11 +1276,11 @@ const char* PracticeMenuHookStatus()
 
 bool IsPracticeMenuReplacementActive()
 {
-    const ULONGLONG lastUpdate = g_lastMenuUpdateTick.load();
-    const PracticeHookStatusValue status = g_hookStatus.load();
+    const ULONGLONG lastUpdate = g_practiceRuntime.lastMenuUpdateTick;
+    const PracticeHookStatusValue status = g_practiceRuntime.hookStatus;
     return (status == PracticeHookStatusValue::Installed ||
             status == PracticeHookStatusValue::StageUiOnly) &&
-        g_menuObject.load() != nullptr && lastUpdate != 0 &&
+        g_practiceRuntime.menuObject != nullptr && lastUpdate != 0 &&
         GetTickCount64() - lastUpdate <= kMenuHeartbeatTimeoutMs;
 }
 
@@ -1248,30 +1289,139 @@ bool IsEnhancedPracticeRunActive()
     return IsActiveEnhancedPracticeRun();
 }
 
-void DrawPracticeMenuReplacementUi()
+void EndEnhancedPracticeRun()
 {
-    if (!IsPracticeMenuReplacementActive())
-        return;
+    PrepareEverlastingBgmForInitialization(false);
+    g_practiceRuntime.enhancedSessionActive = false;
+    g_practiceRuntime.enhancedInitialLoadPending = false;
+    g_practiceRuntime.enhancedRestartPending = false;
+    g_practiceRuntime.clearInitialPlayerStatePending = false;
+    if (auto* practiceFlag =
+            ResolveGameAddress<uint8_t>(GameAddress::PracticeModeFlag))
+        *practiceFlag = 0;
+}
 
-    static int mode = 1;
-    static int warpTarget = 0;
-    static JumpEnum selectedBossJump = TH06NC_JUMP_NONE;
-    static int chapter = 1;
-    static int timelineFrame = 0;
-    static bool dialogue = false;
-    int lives = g_practiceLives.load();
-    int bombs = g_practiceBombs.load();
-    int power = g_practicePower.load();
-    int64_t score = g_practiceScore.load();
-    int graze = g_practiceGraze.load();
-    int pointItems = g_practicePointItems.load();
-    int fakeShot = g_fakeShot.load();
-    unsigned bookFixedMask = g_bookFixedMask.load();
+bool MarkEnhancedPracticeRestartPending()
+{
+    if (!g_practiceRuntime.enhancedSessionActive)
+        return false;
+    const bool compatible =
+        g_practiceRuntime.runningStage == g_practiceParam.stage &&
+        g_practiceRuntime.runningBossBgm == IsMainBossJumpSelected();
+    g_practiceRuntime.restartBgmCompatible = compatible;
+    g_practiceRuntime.enhancedRestartPending = true;
+    if (auto* stage = ResolveGameAddress<int>(GameAddress::CurrentStage))
+        *stage = g_practiceParam.stage;
+    if (auto* difficulty =
+            ResolveGameAddress<int>(GameAddress::CurrentDifficulty))
+        *difficulty = g_practiceParam.stage == 6
+            ? 4 : std::clamp(g_practiceParam.difficulty, 0, 3);
+    return compatible;
+}
+
+bool IsRaging495PracticeActive()
+{
+    return IsActiveEnhancedPracticeRun() && g_practiceParam.raging495 != 0 &&
+        g_practiceParam.stage == 6 &&
+        g_practiceParam.bossJump == TH06NC_ST7_BOSS18;
+}
+
+bool ExportPracticeReplayConfig(PracticeReplayConfig& config)
+{
+    if (!g_practiceRuntime.enhancedSessionActive)
+        return false;
+    config = g_practiceParam;
+    return true;
+}
+
+bool ImportPracticeReplayConfig(const PracticeReplayConfig& config)
+{
+    if (config.stage < 0 || config.stage > 6 ||
+        config.difficulty < 0 || config.difficulty > 4 ||
+        config.warpTarget < 0 || config.warpTarget > 6 ||
+        config.chapter < 1 || config.timelineFrame < 0 ||
+        config.timelineFrame > 999999 ||
+        config.dialogue < 0 || config.dialogue > 1 ||
+        config.lives < 0 || config.lives > 8 ||
+        config.bombs < 0 || config.bombs > 8 ||
+        config.score < 0 || config.score > 9999999990LL ||
+        config.power < 0 || config.power > 128 ||
+        config.graze < 0 || config.graze > 99999 ||
+        config.pointItems < 0 || config.pointItems > 9999 ||
+        config.fakeShot < 0 || config.fakeShot > 4 ||
+        config.raging495 < 0 || config.raging495 > 1 ||
+        config.stage5Boss6Mode < 0 || config.stage5Boss6Mode > 2 ||
+        (config.bookFixedMask & ~0x3fu) != 0)
+        return false;
+    for (int i = 0; i < 6; ++i) {
+        if (config.bookX[i] < -192 || config.bookX[i] > 192 ||
+            config.bookY[i] < -50 || config.bookY[i] > 448)
+            return false;
+    }
+
+    const auto chapterTimes = StageChapterTimes().find(config.stage + 1);
+    if (config.warpTarget == 1 &&
+        (chapterTimes == StageChapterTimes().end() ||
+            config.chapter > static_cast<int>(chapterTimes->second.size())))
+        return false;
+
+    JumpEnum jump = static_cast<JumpEnum>(config.bossJump);
+    if (config.warpTarget >= 2 && config.warpTarget <= 5) {
+        if (jump == TH06NC_JUMP_NONE)
+            return false;
+        const auto& jumps = BossJumps();
+        const int difficulty = config.stage == 6 ? 4 : config.difficulty;
+        const bool known = std::any_of(jumps.begin(), jumps.end(),
+            [jump, &config, difficulty](const BossJump& candidate) {
+                return candidate.jumpname == jump &&
+                    candidate.stage == config.stage + 1 &&
+                    (candidate.diff & (1 << difficulty)) != 0;
+            });
+        if (!known)
+            return false;
+    } else
+        jump = TH06NC_JUMP_NONE;
+
+    g_practiceParam = config;
+    g_practiceParam.difficulty = config.stage == 6 ? 4 : config.difficulty;
+    g_practiceParam.practiceMode = 1;
+    g_practiceParam.bossJump = static_cast<int32_t>(jump);
+
+    g_practiceRuntime.enhancedSessionActive = true;
+    g_practiceRuntime.enhancedInitialLoadPending = true;
+    g_practiceRuntime.clearInitialPlayerStatePending = false;
+    ClearQueuedPracticeJump();
+    QueueConfiguredPracticeJump();
+    return true;
+}
+
+PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
+    uint32_t suppliedNavigation, bool embedded, bool navigationActive,
+    bool resetNavigation, bool resetToLast = false)
+{
+    PausedPracticeUiResult interaction{};
+    int mode = g_practiceParam.practiceMode;
+    int warpTarget = g_practiceParam.warpTarget;
+    JumpEnum selectedBossJump =
+        static_cast<JumpEnum>(g_practiceParam.bossJump);
+    int chapter = g_practiceParam.chapter;
+    int timelineFrame = g_practiceParam.timelineFrame;
+    bool dialogue = g_practiceParam.dialogue != 0;
+    int lives = g_practiceParam.lives;
+    int bombs = g_practiceParam.bombs;
+    int power = g_practiceParam.power;
+    int64_t score = g_practiceParam.score;
+    int graze = g_practiceParam.graze;
+    int pointItems = g_practiceParam.pointItems;
+    int fakeShot = g_practiceParam.fakeShot;
+    bool raging495 = g_practiceParam.raging495 != 0;
+    int stage5Boss6Mode = g_practiceParam.stage5Boss6Mode;
+    unsigned bookFixedMask = g_practiceParam.bookFixedMask;
     int bookX[6]{};
     int bookY[6]{};
     for (int book = 0; book < 6; ++book) {
-        bookX[book] = g_bookX[book].load();
-        bookY[book] = g_bookY[book].load();
+        bookX[book] = g_practiceParam.bookX[book];
+        bookY[book] = g_practiceParam.bookY[book];
     }
     const char* stageNames[kMaximumKnownStageCount] = {
         S(Stage1), S(Stage2), S(Stage3), S(Stage4),
@@ -1283,52 +1433,90 @@ void DrawPracticeMenuReplacementUi()
         S(Nonspell), S(Spell), S(Frame),
     };
     const char* fakeShotNames[] = {
-        S(None), "Reimu A", "Reimu B", "Marisa A", "Marisa B",
+        S(None), S(ReimuA), S(ReimuB), S(MarisaA), S(MarisaB),
+    };
+    const char* stage5Boss6ModeNames[] = {
+        S(DefaultPattern), S(FastPattern), S(SlowPattern),
     };
 
-    ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.9f, io.DisplaySize.y * 0.5f),
-        ImGuiCond_Always, ImVec2(1.0f, 0.5f));
-    ImGui::SetNextWindowSize(
-        ImVec2(io.DisplaySize.x * 0.6f, io.DisplaySize.y * 0.85f),
-        ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.035f, 0.035f, 0.045f, 1.0f));
+    if (!embedded) {
+        ImGuiIO& io = ImGui::GetIO();
+        ImGui::SetNextWindowPos(ImVec2(
+                io.DisplaySize.x * (pausedEditor ? 0.98f : 0.9f),
+                io.DisplaySize.y * 0.5f),
+            ImGuiCond_Always, ImVec2(1.0f, 0.5f));
+        ImGui::SetNextWindowSize(
+            ImVec2(io.DisplaySize.x * 0.6f,
+                io.DisplaySize.y * (pausedEditor ? 0.90f : 0.85f)),
+            ImGuiCond_Always);
+        ImGui::SetNextWindowBgAlpha(1.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg,
+            ImVec4(0.035f, 0.035f, 0.045f, 1.0f));
+    }
 
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse |
         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoNavInputs;
     const std::string practiceWindowTitle =
-        std::string(S(PracticeSetup)) + "###practice-setup";
-    ImGui::Begin(practiceWindowTitle.c_str(), nullptr, flags);
-    ImGui::TextUnformatted(S(PracticeSetup));
-    ImGui::Separator();
+        std::string(S(PracticeSetup)) +
+        (pausedEditor ? "###paused-practice-setup" : "###practice-setup");
+    if (!embedded)
+        ImGui::Begin(practiceWindowTitle.c_str(), nullptr, flags);
+    if (!embedded) {
+        ImGui::TextUnformatted(S(PracticeSetup));
+        ImGui::Separator();
+    }
 
-    static int navigationRow = 0;
-    static int navigationRowCount = 2;
-    const uint32_t navigation = g_navigationActions.exchange(0);
-    if ((navigation & kNavigateUp) != 0)
-        navigationRow = WrapSelection(navigationRow, -1, navigationRowCount);
-    if ((navigation & kNavigateDown) != 0)
-        navigationRow = WrapSelection(navigationRow, 1, navigationRowCount);
+    static int menuNavigationRow = 0;
+    static int menuNavigationRowCount = 2;
+    static int pauseNavigationRow = 0;
+    static int pauseNavigationRowCount = 2;
+    int& navigationRow = pausedEditor
+        ? pauseNavigationRow : menuNavigationRow;
+    int& navigationRowCount = pausedEditor
+        ? pauseNavigationRowCount : menuNavigationRowCount;
+    if (resetNavigation)
+        navigationRow = resetToLast
+            ? std::max(navigationRowCount - 1, 0) : 0;
+    const uint32_t navigation = pausedEditor
+        ? suppliedNavigation
+        : Exchange(g_practiceRuntime.navigationActions, uint32_t{0});
+    if ((navigation & kNavigateUp) != 0) {
+        if (pausedEditor && navigationActive && navigationRow == 0)
+            interaction.leaveUp = true;
+        else
+            navigationRow = WrapSelection(navigationRow, -1,
+                navigationRowCount);
+    }
+    if ((navigation & kNavigateDown) != 0) {
+        if (pausedEditor && navigationActive &&
+            navigationRow == navigationRowCount - 1)
+            interaction.leaveDown = true;
+        else
+            navigationRow = WrapSelection(navigationRow, 1,
+                navigationRowCount);
+    }
     const int horizontal = ((navigation & kNavigateRight) != 0 ? 1 : 0) -
         ((navigation & kNavigateLeft) != 0 ? 1 : 0);
     const bool movedVertically =
         (navigation & (kNavigateUp | kNavigateDown)) != 0;
     int row = 0;
     auto beginRow = [&](int rowIndex) {
-        const bool selected = navigationRow == rowIndex;
+        const bool selected = navigationActive &&
+            navigationRow == rowIndex;
         ImGui::AlignTextToFramePadding();
         if (selected)
             ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.25f, 1.0f), ">");
         else
-            ImGui::TextUnformatted(" ");
+            ImGui::TextColored(ImVec4(0.0f, 0.0f, 0.0f, 0.0f), ">");
         ImGui::SameLine();
         return selected;
     };
     auto finishRow = [&](int rowIndex) {
+        if (ImGui::IsItemHovered())
+            interaction.hovered = true;
         if (ImGui::IsItemClicked())
             navigationRow = rowIndex;
         if (movedVertically && navigationRow == rowIndex)
@@ -1343,7 +1531,7 @@ void DrawPracticeMenuReplacementUi()
     finishRow(modeRow);
 
     const int stageCount = kMaximumKnownStageCount;
-    int selectedStage = ClampStage(g_selectedStage.load(), stageCount);
+    int selectedStage = ClampStage(g_practiceParam.stage, stageCount);
     const int oldStage = selectedStage;
     const int stageRow = row++;
     const bool stageFocused = beginRow(stageRow);
@@ -1353,7 +1541,7 @@ void DrawPracticeMenuReplacementUi()
         S(Stage), &selectedStage, stageNames, stageCount);
     finishRow(stageRow);
     if (stageClicked || selectedStage != oldStage) {
-        g_selectedStage.store(selectedStage);
+        g_practiceParam.stage = selectedStage;
         chapter = 1;
         selectedBossJump = TH06NC_JUMP_NONE;
     }
@@ -1395,7 +1583,7 @@ void DrawPracticeMenuReplacementUi()
         case 4:
         case 5: {
             const int difficulty = selectedStage == 6
-                ? 4 : std::clamp(g_originalDifficulty.load(), 0, 3);
+                ? 4 : std::clamp(g_practiceParam.difficulty, 0, 3);
             const int difficultyMask = 1 << difficulty;
             std::vector<const BossJump*> choices;
             for (const BossJump& jump : BossJumps()) {
@@ -1457,6 +1645,28 @@ void DrawPracticeMenuReplacementUi()
                 ImGui::EndCombo();
             }
             finishRow(jumpRow);
+
+            if (selectedBossJump == TH06NC_ST5_BOSS6) {
+                const int patternModeRow = row++;
+                const bool patternModeFocused = beginRow(patternModeRow);
+                if (patternModeFocused && horizontal != 0)
+                    stage5Boss6Mode = WrapSelection(stage5Boss6Mode,
+                        horizontal, IM_ARRAYSIZE(stage5Boss6ModeNames));
+                ImGui::Combo(S(Mode), &stage5Boss6Mode,
+                    stage5Boss6ModeNames,
+                    IM_ARRAYSIZE(stage5Boss6ModeNames));
+                finishRow(patternModeRow);
+            }
+
+            if (selectedStage == 6 &&
+                selectedBossJump == TH06NC_ST7_BOSS18) {
+                const int rageRow = row++;
+                const bool rageFocused = beginRow(rageRow);
+                if (rageFocused && horizontal != 0)
+                    raging495 = !raging495;
+                ImGui::Checkbox(S(Raging495), &raging495);
+                finishRow(rageRow);
+            }
 
             const int dialogueRow = row++;
             const bool dialogueFocused = beginRow(dialogueRow);
@@ -1613,34 +1823,55 @@ void DrawPracticeMenuReplacementUi()
     navigationRowCount = std::max(row, 1);
     navigationRow = std::clamp(navigationRow, 0, navigationRowCount - 1);
 
-    g_practiceMode.store(mode);
-    g_warpTarget.store(warpTarget);
-    g_selectedChapter.store(chapter);
-    g_selectedTimelineFrame.store(timelineFrame);
-    g_selectedBossJump.store(selectedBossJump);
-    g_bossDialogue.store(dialogue);
-    g_practiceLives.store(std::clamp(lives, 0, 8));
-    g_practiceBombs.store(std::clamp(bombs, 0, 8));
-    g_practiceScore.store(std::clamp(score, int64_t{0}, int64_t{9999999990LL}));
-    g_practicePower.store(std::clamp(power, 0, 128));
-    g_practiceGraze.store(std::clamp(graze, 0, 99999));
-    g_practicePointItems.store(std::clamp(pointItems, 0, 9999));
-    g_fakeShot.store(fakeShot);
-    g_bookFixedMask.store(bookFixedMask);
+    g_practiceParam.practiceMode = mode;
+    g_practiceParam.warpTarget = warpTarget;
+    g_practiceParam.chapter = chapter;
+    g_practiceParam.timelineFrame = timelineFrame;
+    g_practiceParam.bossJump = static_cast<int32_t>(selectedBossJump);
+    g_practiceParam.dialogue = dialogue ? 1 : 0;
+    g_practiceParam.lives = std::clamp(lives, 0, 8);
+    g_practiceParam.bombs = std::clamp(bombs, 0, 8);
+    g_practiceParam.score =
+        std::clamp(score, int64_t{0}, int64_t{9999999990LL});
+    g_practiceParam.power = std::clamp(power, 0, 128);
+    g_practiceParam.graze = std::clamp(graze, 0, 99999);
+    g_practiceParam.pointItems = std::clamp(pointItems, 0, 9999);
+    g_practiceParam.fakeShot = fakeShot;
+    g_practiceParam.raging495 = raging495 ? 1 : 0;
+    g_practiceParam.stage5Boss6Mode = stage5Boss6Mode;
+    g_practiceParam.bookFixedMask = bookFixedMask;
     for (int book = 0; book < 6; ++book) {
-        g_bookX[book].store(bookX[book]);
-        g_bookY[book].store(bookY[book]);
+        g_practiceParam.bookX[book] = bookX[book];
+        g_practiceParam.bookY[book] = bookY[book];
     }
 
-    ImGui::Separator();
-    if (ImGui::Button(S(Start), ImVec2(150.0f, 0.0f)))
-        g_startRequested.store(true);
-    ImGui::SameLine();
-    ImGui::TextDisabled("%s", S(NavigationHelp));
-    ImGui::TextDisabled(S(JumpHook), PracticeJumpHookStatus());
-    ImGui::TextDisabled("%s", S(WarpHelp));
-    ImGui::End();
+    if (!pausedEditor) {
+        ImGui::Separator();
+        if (ImGui::Button(S(Start), ImVec2(150.0f, 0.0f)))
+            g_practiceRuntime.startRequested = true;
+    }
+    if (!embedded) {
+        ImGui::End();
+        ImGui::PopStyleColor();
+        ImGui::PopStyleVar(2);
+    }
+    return interaction;
+}
 
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar(2);
+void DrawPracticeMenuReplacementUi()
+{
+    if (IsPracticeMenuReplacementActive())
+        DrawPracticeConfigurationEditorUi(false, 0, false, true, false);
+}
+
+PausedPracticeUiResult DrawPausedPracticeConfigurationUi(int vertical,
+    int horizontal, bool focused, bool resetNavigation, bool resetToLast)
+{
+    uint32_t navigation = 0;
+    if (vertical < 0) navigation |= kNavigateUp;
+    if (vertical > 0) navigation |= kNavigateDown;
+    if (horizontal < 0) navigation |= kNavigateLeft;
+    if (horizontal > 0) navigation |= kNavigateRight;
+    return DrawPracticeConfigurationEditorUi(true, navigation, true,
+        focused, resetNavigation, resetToLast);
 }

@@ -6,6 +6,7 @@
 #include "locale.h"
 #include "overlay.h"
 #include "practice_menu.h"
+#include "replay_support.h"
 #include "imgui.h"
 
 #include <windows.h>
@@ -27,10 +28,6 @@ void DrawPracticeBaseUi(const char* rendererName)
     ImGui::Begin(S(BaseTitle), nullptr, flags);
     ImGui::TextUnformatted(S(InjectionActive));
     ImGui::Text(S(Version), Th06ncPracVersion::Text);
-    ImGui::Text(S(Renderer), rendererName);
-    ImGui::Text(S(ProcessId), GetCurrentProcessId());
-    ImGui::TextDisabled("%s", S(F10Hint));
-    ImGui::Separator();
 
     static const char* languageNames[] = {"中文", "English", "日本語"};
     int language = static_cast<int>(Locale::Instance().GetLanguage());
@@ -105,10 +102,17 @@ void DrawPracticeBaseUi(const char* rendererName)
             *timerPeriod = static_cast<INT64>(
                 static_cast<double>(*timerFrequency) / gameSpeedPlaceholder + 0.5);
     }
+    DrawKeyBindingUi();
 
     ImGui::NewLine();
     ImGui::NewLine();
     ImGui::NewLine();
+
+    ImGui::Text(S(Renderer), rendererName);
+    ImGui::Text(S(ProcessId), GetCurrentProcessId());
+    ImGui::Text(S(ReplayHook), ReplaySupportHookStatus());
+    ImGui::TextDisabled("%s", S(F10Hint));
+    ImGui::Separator();
 
     if (ImGui::CollapsingHeader(S(Licenses))) {
         ImGui::TextWrapped("th06nc_prac_vibe - MIT License - Copyright (c) 2026 RUEEE");

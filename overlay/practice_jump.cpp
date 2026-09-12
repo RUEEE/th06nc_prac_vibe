@@ -2,17 +2,19 @@
 
 #include "game_addresses.h"
 #include "locale.h"
+#include "practice_menu.h"
 
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <type_traits>
+#include <utility>
 
 namespace {
 
@@ -22,6 +24,12 @@ constexpr ptrdiff_t kEnemyManagerTimelineTime = 0x10c0bc;
 constexpr size_t kTimelineUpdatePrologueSize = 6;
 constexpr unsigned char kExpectedTimelineUpdatePrologue[kTimelineUpdatePrologueSize] = {
     0x48, 0x8b, 0xc4, 0x53, 0x56, 0x57
+};
+constexpr size_t kFinalSpellRagePrologueSize = 17;
+constexpr unsigned char kExpectedFinalSpellRagePrologue[kFinalSpellRagePrologueSize] = {
+    0x48, 0x83, 0xec, 0x18, 0x33, 0xc0,
+    0x0f, 0x29, 0x34, 0x24,
+    0x81, 0x79, 0x04, 0x20, 0x1c, 0x00, 0x00,
 };
 
 enum class RequestKind : int { None, Stage, Stage4Books, Boss };
@@ -41,19 +49,30 @@ constexpr StageEclIdentity kStageEclIdentity[7] = {
     {145, 0x10974, 77684},
 };
 
-std::atomic<RequestKind> g_requestKind{RequestKind::None};
-std::atomic<int> g_requestStage{0};
-std::atomic<int> g_requestTime{0};
-std::atomic<JumpEnum> g_requestJump{TH06NC_JUMP_NONE};
-std::atomic<bool> g_requestDialogue{true};
-std::atomic<int> g_requestFakeShot{0};
-std::atomic<unsigned> g_requestBookFixedMask{0};
-std::atomic<int> g_requestBookX[6]{};
-std::atomic<int> g_requestBookY[6]{};
-std::atomic<HookStatus> g_hookStatus{HookStatus::NotInstalled};
+struct PracticeJumpRequest {
+    RequestKind kind = RequestKind::None;
+    int stage = 0;
+    int timelineTime = 0;
+    JumpEnum jump = TH06NC_JUMP_NONE;
+    bool dialogue = true;
+    int fakeShot = 0;
+    int stage5Boss6Mode = 0;
+    unsigned bookFixedMask = 0;
+    std::array<int, 6> bookX{};
+    std::array<int, 6> bookY{};
+};
+
+struct PracticeJumpRuntime {
+    PracticeJumpRequest pending{};
+    HookStatus hookStatus = HookStatus::NotInstalled;
+};
+
+PracticeJumpRuntime g_practiceJumpRuntime{};
 
 using TimelineUpdateFn = int(__fastcall*)(void* enemyManager);
 TimelineUpdateFn g_originalTimelineUpdate = nullptr;
+using FinalSpellRageFn = void(__fastcall*)(void* enemy, void* instruction);
+FinalSpellRageFn g_originalFinalSpellRage = nullptr;
 
 struct PatchPair {
     size_t offset;
@@ -214,7 +233,7 @@ J(BOSS_SPELL, TH06NC_ST7_BOSS21, 7, kExtraDifficulty),
 #undef J
 
 bool ApplyBossPatch(EclWriter& ecl, JumpEnum section, bool dialogue,
-    int fakeShot, int& timelineTime)
+    int fakeShot, int stage5Boss6Mode, int& timelineTime)
 {
     auto ECLWarp = [&](int time) { timelineTime = time; };
     auto s2b_nd = [&]() {
@@ -518,6 +537,18 @@ bool ApplyBossPatch(EclWriter& ecl, JumpEnum section, bool dialogue,
             ecl << pair{0x2538, 0x0} << pair{0x2548, 0x0};
             ECLSetTime(ecl, 0x4a2c, 0, 0);
             ECLStall(ecl, 0x4a3c);
+            // Sub62 movement-loop timing. Fast makes the unconditional jump
+            // occur at the earlier boundary; Slow delays the conditional
+            // branch to the later boundary. Default preserves both values.
+            if (stage5Boss6Mode == 1)
+            {
+                ecl << pair{0x6794, 114}; // jump(154, Sub62_512)
+            }
+            else if (stage5Boss6Mode == 2)
+            {
+                ecl << pair{0x6770, 154}; // jump_geq(114, Sub62_496)
+                ecl << pair{ 0x679C, 154 }; // jump(154, Sub62_512)
+            }
         }
         break;
 
@@ -802,11 +833,12 @@ bool ValidateLoadedEcl(std::byte* ecl, int stage)
 
 int __fastcall HookedTimelineUpdate(void* enemyManager)
 {
-    const RequestKind kind = g_requestKind.exchange(
-        RequestKind::None, std::memory_order_acq_rel);
+    const PracticeJumpRequest request = std::exchange(
+        g_practiceJumpRuntime.pending, PracticeJumpRequest{});
+    const RequestKind kind = request.kind;
     if (kind != RequestKind::None && enemyManager) {
-        const int stage = g_requestStage.load(std::memory_order_relaxed);
-        int timelineTime = g_requestTime.load(std::memory_order_relaxed);
+        const int stage = request.stage;
+        int timelineTime = request.timelineTime;
         bool ready = kind == RequestKind::Stage;
         if (kind == RequestKind::Stage4Books) {
             auto** eclSlot = ResolveGameAddress<std::byte*>(GameAddress::LoadedEclFile);
@@ -815,8 +847,7 @@ int __fastcall HookedTimelineUpdate(void* enemyManager)
                 EclWriter writer(eclData, kStageEclIdentity[3].size);
                 constexpr size_t kFirstBookArguments = 0xf2f8;
                 constexpr size_t kBookInstructionSize = 0x1c;
-                const unsigned fixedMask =
-                    g_requestBookFixedMask.load(std::memory_order_relaxed);
+                const unsigned fixedMask = request.bookFixedMask;
                 for (int book = 0; book < 6; ++book) {
                     if ((fixedMask & (1u << book)) == 0)
                         continue;
@@ -826,16 +857,13 @@ int __fastcall HookedTimelineUpdate(void* enemyManager)
                     // floats. A fixed book must replace the complete -999.0f
                     // random-X sentinel, not merely its low 16 bits.
                     writer << pair{offset, static_cast<float>(
-                            g_requestBookX[book].load(std::memory_order_relaxed) + 192)}
+                            request.bookX[book] + 192)}
                         << pair{offset + 4, static_cast<float>(
-                            g_requestBookY[book].load(std::memory_order_relaxed))};
+                            request.bookY[book])};
                 }
                 ready = writer.valid();
             } else {
-                RequestKind expected = RequestKind::None;
-                g_requestKind.compare_exchange_strong(expected,
-                    RequestKind::Stage4Books, std::memory_order_release,
-                    std::memory_order_relaxed);
+                g_practiceJumpRuntime.pending = request;
             }
         } else if (kind == RequestKind::Boss) {
             auto** eclSlot = ResolveGameAddress<std::byte*>(GameAddress::LoadedEclFile);
@@ -844,16 +872,14 @@ int __fastcall HookedTimelineUpdate(void* enemyManager)
                 EclWriter writer(eclData, kStageEclIdentity[stage - 1].size);
                 timelineTime = -1;
                 ready = ApplyBossPatch(writer,
-                    g_requestJump.load(std::memory_order_relaxed),
-                    g_requestDialogue.load(std::memory_order_relaxed),
-                    g_requestFakeShot.load(std::memory_order_relaxed), timelineTime);
+                    request.jump, request.dialogue, request.fakeShot,
+                    request.stage5Boss6Mode,
+                    timelineTime);
             } else {
                 // A transition can reach this hook once while the old ECL is
                 // still being torn down. Keep the request for the first update
                 // that exposes the selected stage's validated ECL buffer.
-                RequestKind expected = RequestKind::None;
-                g_requestKind.compare_exchange_strong(expected, RequestKind::Boss,
-                    std::memory_order_release, std::memory_order_relaxed);
+                g_practiceJumpRuntime.pending = request;
             }
         }
         if (ready)
@@ -861,6 +887,25 @@ int __fastcall HookedTimelineUpdate(void* enemyManager)
                 kEnemyManagerTimelineTime) = timelineTime;
     }
     return g_originalTimelineUpdate(enemyManager);
+}
+
+void __fastcall HookedFinalSpellRage(void* enemy, void* instruction)
+{
+    if (!g_originalFinalSpellRage)
+        return;
+    if (!enemy || !IsRaging495PracticeActive()) {
+        g_originalFinalSpellRage(enemy, instruction);
+        return;
+    }
+
+    // The stock callback selects QED's phase from its enemy-local age. Feed
+    // it the final-phase threshold for this call only; ECL continues to own
+    // and advance the real timer after the phase has been selected.
+    auto* age = reinterpret_cast<int*>(static_cast<std::byte*>(enemy) + 4);
+    const int originalAge = *age;
+    *age = 7200;
+    g_originalFinalSpellRage(enemy, instruction);
+    *age = originalAge;
 }
 
 void* AllocateNearAddress(void* target, size_t size)
@@ -905,6 +950,46 @@ void WriteAbsoluteJump(unsigned char* destination, const void* target)
     *reinterpret_cast<uintptr_t*>(destination + 6) = reinterpret_cast<uintptr_t>(target);
 }
 
+bool InstallFinalSpellRageHook()
+{
+    auto* target = ResolveGameAddress<unsigned char>(GameAddress::FinalSpellRage);
+    if (!target || std::memcmp(target, kExpectedFinalSpellRagePrologue,
+            kFinalSpellRagePrologueSize) != 0)
+        return false;
+
+    constexpr size_t trampolineSize = kFinalSpellRagePrologueSize + 14;
+    auto* trampoline = static_cast<unsigned char*>(VirtualAlloc(nullptr,
+        trampolineSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    if (!trampoline)
+        return false;
+    std::memcpy(trampoline, target, kFinalSpellRagePrologueSize);
+    WriteAbsoluteJump(trampoline + kFinalSpellRagePrologueSize,
+        target + kFinalSpellRagePrologueSize);
+
+    DWORD trampolineProtection = 0;
+    if (!VirtualProtect(trampoline, trampolineSize, PAGE_EXECUTE_READ,
+            &trampolineProtection)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return false;
+    }
+    DWORD targetProtection = 0;
+    if (!VirtualProtect(target, kFinalSpellRagePrologueSize,
+            PAGE_EXECUTE_READWRITE, &targetProtection)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return false;
+    }
+    g_originalFinalSpellRage =
+        reinterpret_cast<FinalSpellRageFn>(trampoline);
+    WriteAbsoluteJump(target, reinterpret_cast<void*>(HookedFinalSpellRage));
+    std::memset(target + 14, 0x90, kFinalSpellRagePrologueSize - 14);
+    FlushInstructionCache(GetCurrentProcess(), target,
+        kFinalSpellRagePrologueSize);
+    DWORD ignored = 0;
+    VirtualProtect(target, kFinalSpellRagePrologueSize,
+        targetProtection, &ignored);
+    return true;
+}
+
 } // namespace
 
 const std::map<int, std::vector<int>>& StageChapterTimes()
@@ -919,53 +1004,69 @@ const std::vector<BossJump>& BossJumps()
 
 void QueueStagePracticeJump(int stage, int timelineTime)
 {
-    g_requestStage.store(stage, std::memory_order_relaxed);
-    g_requestTime.store(timelineTime, std::memory_order_relaxed);
-    g_requestJump.store(TH06NC_JUMP_NONE, std::memory_order_relaxed);
-    g_requestKind.store(RequestKind::Stage, std::memory_order_release);
+    g_practiceJumpRuntime.pending = {
+        .kind = RequestKind::Stage,
+        .stage = stage,
+        .timelineTime = timelineTime,
+    };
 }
 
 void QueueStage4BooksPracticeJump(int timelineTime, unsigned fixedMask,
     const int* x, const int* y)
 {
+    PracticeJumpRequest request{
+        .kind = RequestKind::Stage4Books,
+        .stage = 4,
+        .timelineTime = timelineTime,
+        .bookFixedMask = fixedMask,
+    };
     for (int book = 0; book < 6; ++book) {
-        g_requestBookX[book].store(x[book], std::memory_order_relaxed);
-        g_requestBookY[book].store(y[book], std::memory_order_relaxed);
+        request.bookX[book] = x[book];
+        request.bookY[book] = y[book];
     }
-    g_requestBookFixedMask.store(fixedMask, std::memory_order_relaxed);
-    g_requestStage.store(4, std::memory_order_relaxed);
-    g_requestTime.store(timelineTime, std::memory_order_relaxed);
-    g_requestJump.store(TH06NC_JUMP_NONE, std::memory_order_relaxed);
-    g_requestKind.store(RequestKind::Stage4Books, std::memory_order_release);
+    g_practiceJumpRuntime.pending = request;
 }
 
-void QueueBossPracticeJump(int stage, JumpEnum jump, bool dialogue, int fakeShot)
+void QueueBossPracticeJump(int stage, JumpEnum jump, bool dialogue,
+    int fakeShot, int stage5Boss6Mode)
 {
-    g_requestStage.store(stage, std::memory_order_relaxed);
-    g_requestJump.store(jump, std::memory_order_relaxed);
-    g_requestDialogue.store(dialogue, std::memory_order_relaxed);
-    g_requestFakeShot.store(fakeShot, std::memory_order_relaxed);
-    g_requestKind.store(RequestKind::Boss, std::memory_order_release);
+    g_practiceJumpRuntime.pending = {
+        .kind = RequestKind::Boss,
+        .stage = stage,
+        .jump = jump,
+        .dialogue = dialogue,
+        .fakeShot = fakeShot,
+        .stage5Boss6Mode = stage5Boss6Mode,
+    };
 }
 
 void ClearQueuedPracticeJump()
 {
-    g_requestKind.store(RequestKind::None, std::memory_order_release);
+    g_practiceJumpRuntime.pending = {};
 }
 
 bool InstallPracticeJumpHook()
 {
-    if (g_hookStatus.load() == HookStatus::Installed)
+    if (g_practiceJumpRuntime.hookStatus == HookStatus::Installed)
         return true;
     auto* target = ResolveGameAddress<unsigned char>(GameAddress::EnemyTimelineUpdate);
-    if (!target || std::memcmp(target, kExpectedTimelineUpdatePrologue,
-            kTimelineUpdatePrologueSize) != 0) {
-        g_hookStatus.store(HookStatus::UnsupportedExecutable);
+    auto* rageTarget = ResolveGameAddress<unsigned char>(GameAddress::FinalSpellRage);
+    if (!target || !rageTarget ||
+        std::memcmp(target, kExpectedTimelineUpdatePrologue,
+            kTimelineUpdatePrologueSize) != 0 ||
+        std::memcmp(rageTarget, kExpectedFinalSpellRagePrologue,
+            kFinalSpellRagePrologueSize) != 0) {
+        g_practiceJumpRuntime.hookStatus = HookStatus::UnsupportedExecutable;
         return false;
     }
     auto* block = static_cast<unsigned char*>(AllocateNearAddress(target, 64));
     if (!block) {
-        g_hookStatus.store(HookStatus::AllocationFailed);
+        g_practiceJumpRuntime.hookStatus = HookStatus::AllocationFailed;
+        return false;
+    }
+    if (!InstallFinalSpellRageHook()) {
+        VirtualFree(block, 0, MEM_RELEASE);
+        g_practiceJumpRuntime.hookStatus = HookStatus::PatchFailed;
         return false;
     }
     unsigned char* relay = block;
@@ -977,7 +1078,7 @@ bool InstallPracticeJumpHook()
     DWORD oldBlockProtection = 0;
     if (!VirtualProtect(block, 64, PAGE_EXECUTE_READ, &oldBlockProtection)) {
         VirtualFree(block, 0, MEM_RELEASE);
-        g_hookStatus.store(HookStatus::PatchFailed);
+        g_practiceJumpRuntime.hookStatus = HookStatus::PatchFailed;
         return false;
     }
     const intptr_t relative = reinterpret_cast<intptr_t>(relay) -
@@ -985,14 +1086,14 @@ bool InstallPracticeJumpHook()
     if (relative < std::numeric_limits<int32_t>::min() ||
         relative > std::numeric_limits<int32_t>::max()) {
         VirtualFree(block, 0, MEM_RELEASE);
-        g_hookStatus.store(HookStatus::PatchFailed);
+        g_practiceJumpRuntime.hookStatus = HookStatus::PatchFailed;
         return false;
     }
     DWORD oldTargetProtection = 0;
     if (!VirtualProtect(target, kTimelineUpdatePrologueSize,
             PAGE_EXECUTE_READWRITE, &oldTargetProtection)) {
         VirtualFree(block, 0, MEM_RELEASE);
-        g_hookStatus.store(HookStatus::PatchFailed);
+        g_practiceJumpRuntime.hookStatus = HookStatus::PatchFailed;
         return false;
     }
     g_originalTimelineUpdate = reinterpret_cast<TimelineUpdateFn>(trampoline);
@@ -1002,13 +1103,13 @@ bool InstallPracticeJumpHook()
     FlushInstructionCache(GetCurrentProcess(), target, kTimelineUpdatePrologueSize);
     DWORD ignored = 0;
     VirtualProtect(target, kTimelineUpdatePrologueSize, oldTargetProtection, &ignored);
-    g_hookStatus.store(HookStatus::Installed);
+    g_practiceJumpRuntime.hookStatus = HookStatus::Installed;
     return true;
 }
 
 const char* PracticeJumpHookStatus()
 {
-    switch (g_hookStatus.load()) {
+    switch (g_practiceJumpRuntime.hookStatus) {
     case HookStatus::Installed: return S(StatusActive);
     case HookStatus::UnsupportedExecutable: return S(StatusUnsupportedExecutable);
     case HookStatus::AllocationFailed: return S(StatusAllocationFailed);

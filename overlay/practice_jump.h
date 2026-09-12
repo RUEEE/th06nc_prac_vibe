@@ -49,13 +49,13 @@ struct BossJump {
 const std::map<int, std::vector<int>>& StageChapterTimes();
 const std::vector<BossJump>& BossJumps();
 
-// Queued on the practice-select update thread and consumed once, after the
-// selected stage's ECL has been loaded by the gameplay update thread.
+// Queued during practice selection and consumed once by a later timeline
+// callback, after the selected stage's ECL has been loaded.
 void QueueStagePracticeJump(int stage, int timelineTime);
 void QueueStage4BooksPracticeJump(int timelineTime, unsigned fixedMask,
     const int* x, const int* y);
 void QueueBossPracticeJump(int stage, JumpEnum jump, bool dialogue,
-    int fakeShot = 0);
+    int fakeShot = 0, int stage5Boss6Mode = 0);
 void ClearQueuedPracticeJump();
 
 bool InstallPracticeJumpHook();

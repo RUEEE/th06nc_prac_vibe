@@ -96,6 +96,7 @@
     <ClCompile Include="overlay.cpp" />
     <ClCompile Include="practice_menu.cpp" />
     <ClCompile Include="practice_jump.cpp" />
+    <ClCompile Include="replay_support.cpp" />
     <ClCompile Include="ui.cpp" />
     <ClCompile Include="..\third_party\imgui\imgui.cpp" />
     <ClCompile Include="..\third_party\imgui\imgui_demo.cpp" />
@@ -116,6 +117,7 @@
     <ClInclude Include="overlay.h" />
     <ClInclude Include="practice_jump.h" />
     <ClInclude Include="practice_menu.h" />
+    <ClInclude Include="replay_support.h" />
     <ClInclude Include="ui.h" />
     <ClInclude Include="..\third_party\imgui\imgui.h" />
     <ClInclude Include="..\third_party\imgui\imgui_impl_dx9.h" />

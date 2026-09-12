@@ -22,15 +22,17 @@ observes requests for `D3D11CreateDevice`, `CreateDXGIFactory*`, and
 `Direct3DCreate9*`, then patches the resulting DXGI or D3D9 virtual tables.
 Already-resolved exports are also recovered after injection.
 
-The Present hooks own the ImGui frame. Game-update hooks never call ImGui;
-they exchange values through atomics and small request records. This is an
-important thread boundary:
+The Present hooks own the ImGui frame. Game-update hooks never call ImGui.
+Persistent practice selections live in one ordinary `PracticeParam` because
+TH06NC executes the relevant game/UI callbacks serially. Short-lived action
+mailboxes and hook-lifetime state retain atomics so a future renderer/threading
+change cannot lose an edge:
 
 ```text
 game update thread                         rendering/Present thread
 ------------------                         ------------------------
-native Practice selector  -- atomics -->   replacement Practice UI
-player/timeline hooks      <-- request --   persistent UI settings
+native Practice selector  -- action -->    replacement Practice UI
+player/timeline hooks      <-- struct --    persistent `PracticeParam`
                                              ImGui rendering
 ```
 
@@ -40,6 +42,13 @@ ImGui font/style scale is derived from display height. The reference is a
 2.5x scale at 1440 pixels, so controls retain approximately the same fraction
 of window height at other resolutions. The F10 base window covers the complete
 display; the compact Backspace window is independent.
+
+The font atlas does not load ImGui's full Chinese range. At context creation,
+`Locale::AppendAllGlyphText()` enumerates every Chinese, English, and Japanese
+UI/jump string, including fake-shot spell variants. `ImFontGlyphRangesBuilder`
+combines their code points with the default Latin range and the three language
+selector labels. The resulting range vector persists for the lifetime of the
+font atlas, allowing runtime language switching with a much smaller texture.
 
 ## Safe x64 patching rules
 
@@ -63,4 +72,3 @@ executing a hook against a shifted instruction stream.
 keyboard/action input, Backspace helper, and collision capture hooks before it
 waits for a renderer. This allows game-flow hooks to work even if graphics API
 discovery occurs later.
-

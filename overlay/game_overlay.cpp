@@ -44,10 +44,6 @@ constexpr PatchSite<7> kPowerSecondStore{
     GameAddress::PowerLossSecondStore,
     {0x66, 0x89, 0x35, 0x6B, 0x91, 0x48, 0x00},
     {0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90}};
-constexpr PatchSite<5> kPauseBgmStopCall{
-    GameAddress::PauseBgmStopCall,
-    {0xE8, 0x38, 0x2B, 0x09, 0x00},
-    {0x90, 0x90, 0x90, 0x90, 0x90}};
 constexpr PatchSite<7> kBulletDieStateStore{
     GameAddress::PlayerDieStoreBullet,
     {0xC6, 0x83, 0x98, 0x78, 0x00, 0x00, 0x02},
@@ -67,13 +63,13 @@ bool g_invincible = false;
 bool g_lockLives = false;
 bool g_lockBombs = false;
 bool g_lockPower = false;
+bool g_lockTime = false;
 bool g_autoBomb = false;
 bool g_everlastingBgm = false;
 bool g_noBomb = false;
 bool g_patchError = false;
-std::string g_trackedBgmPath;
-int64_t g_trackedBgmPosition = -1;
 void* g_autoBombRelay = nullptr;
+void* g_enemyUpdateTrampoline = nullptr;
 
 template <size_t Size>
 bool SiteHasBytes(const PatchSite<Size>& site,
@@ -161,47 +157,68 @@ bool ApplyPower(bool enabled)
         kPowerSecondStore);
 }
 
-bool ApplyEverlastingBgm(bool enabled)
-{
-    // This call only pauses the existing handle when ESC opens the pause menu;
-    // resource disposal on restart/exit remains fully native.
-    return SetPatchGroup(enabled, kPauseBgmStopCall);
-}
+using EnemyUpdateFn = int64_t(__fastcall*)(void*);
 
-void UpdateBgmPositionTracking(bool active)
+int64_t __fastcall HookedEnemyUpdate(void* enemyManager)
 {
-    if (!active) {
-        g_trackedBgmPath.clear();
-        g_trackedBgmPosition = -1;
-        return;
+    auto original = reinterpret_cast<EnemyUpdateFn>(g_enemyUpdateTrampoline);
+    if (!original || !enemyManager)
+        return original ? original(enemyManager) : 0;
+
+    constexpr ptrdiff_t kFirstEnemy = 8;
+    constexpr ptrdiff_t kEnemyStride = 0x10B0;
+    constexpr ptrdiff_t kTimer = 4;
+    constexpr ptrdiff_t kActiveFlags = 0xBC;
+    constexpr int kEnemyCount = 256;
+    std::array<int, kEnemyCount> timers{};
+    auto* base = static_cast<std::byte*>(enemyManager);
+    auto* timeline = ResolveGameAddress<int>(GameAddress::TimelineFrame);
+    const bool locked = g_lockTime && timeline &&
+        IsEnhancedPracticeRunActive();
+    const int timelineBefore = locked ? *timeline : 0;
+    if (locked) {
+        for (int i = 0; i < kEnemyCount; ++i)
+            timers[i] = *reinterpret_cast<int*>(base + kFirstEnemy +
+                i * kEnemyStride + kTimer);
     }
 
-    const auto* path = ResolveGameAddress<char>(GameAddress::BgmCurrentPath);
-    const auto* handle = ResolveGameAddress<int32_t>(GameAddress::BgmHandle);
-    auto getPosition = reinterpret_cast<int64_t(__fastcall*)(int32_t)>(
-        ResolveGameAddress<void>(GameAddress::BgmGetPosition));
-    if (!path || !handle || *handle == -1 || !getPosition)
-        return;
+    const int64_t result = original(enemyManager);
+    if (locked) {
+        *timeline = timelineBefore;
+        for (int i = 0; i < kEnemyCount; ++i) {
+            std::byte* enemy = base + kFirstEnemy + i * kEnemyStride;
+            if ((*reinterpret_cast<uint8_t*>(enemy + kActiveFlags) & 0x80) != 0)
+                *reinterpret_cast<int*>(enemy + kTimer) = timers[i];
+        }
 
-    constexpr size_t kMaximumBgmPathLength = 0x190;
-    const size_t length = strnlen_s(path, kMaximumBgmPathLength);
-    if (length == 0 || length == kMaximumBgmPathLength)
-        return;
-    const int64_t position = getPosition(*handle);
-    if (position < 0)
-        return;
-    g_trackedBgmPath.assign(path, length);
-    g_trackedBgmPosition = position;
-}
-
-void ApplyCheckbox(bool& value, bool changed, bool (*apply)(bool))
-{
-    if (!changed)
-        return;
-    if (!apply(value)) {
-        value = !value;
-        g_patchError = true;
+        // The original game's midboss waits need the global timeline to reach
+        // their interrupt point. This is the same exception used by the
+        // zxxsmart implementation; without it, Lock Time can strand a
+        // midboss introduction forever. Values are the mapped nc_ecl frames.
+        constexpr int starts[] = {1882, 2498, 0, 4058, 3274};
+        constexpr int lengths[] = {48 * 60, 32 * 60, 0, 40 * 60, 70 * 60};
+        constexpr int waits[] = {4 * 60, 15 * 60, 0, 12 * 60, 5 * 60};
+        const auto* stageAddress =
+            ResolveGameAddress<uint8_t>(GameAddress::CurrentStage);
+        const int stage = stageAddress ? static_cast<int>(*stageAddress) : -1;
+        if (stage >= 0 && stage < 5 && stage != 2 &&
+            timelineBefore >= starts[stage] &&
+            timelineBefore < starts[stage] + lengths[stage]) {
+            for (int i = 0; i < kEnemyCount; ++i) {
+                std::byte* enemy = base + kFirstEnemy + i * kEnemyStride;
+                const uint8_t active =
+                    *reinterpret_cast<uint8_t*>(enemy + kActiveFlags);
+                const uint8_t type =
+                    *reinterpret_cast<uint8_t*>(enemy + kActiveFlags + 1);
+                if ((active & 0x80) != 0 && (type & 0x08) != 0) {
+                    *timeline = std::max(timelineBefore,
+                        starts[stage] + waits[stage]);
+                    break;
+                }
+            }
+        }
     }
+    return result;
 }
 
 void DrawAutoShootIndicator()
@@ -261,12 +278,68 @@ void* AllocateNearAddress(void* target, size_t size)
     return nullptr;
 }
 
+void WriteAbsoluteJump(unsigned char* destination, const void* target)
+{
+    destination[0] = 0xFF;
+    destination[1] = 0x25;
+    *reinterpret_cast<uint32_t*>(destination + 2) = 0;
+    *reinterpret_cast<const void**>(destination + 6) = target;
+}
+
+bool InstallEnemyUpdateHook()
+{
+    if (g_enemyUpdateTrampoline)
+        return true;
+
+    constexpr std::array<unsigned char, 15> expected{
+        0x48, 0x8B, 0xC4, 0x48, 0x89, 0x48, 0x08,
+        0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55};
+    auto* target = ResolveGameAddress<unsigned char>(GameAddress::EnemyUpdate);
+    if (!target || !IsGameAddressRangeValid(GameAddress::EnemyUpdate,
+            expected.size()) ||
+        std::memcmp(target, expected.data(), expected.size()) != 0)
+        return false;
+
+    constexpr size_t kTrampolineSize = 15 + 14;
+    auto* trampoline = static_cast<unsigned char*>(VirtualAlloc(nullptr,
+        kTrampolineSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    if (!trampoline)
+        return false;
+    std::memcpy(trampoline, target, expected.size());
+    WriteAbsoluteJump(trampoline + expected.size(), target + expected.size());
+
+    DWORD trampolineProtection = 0;
+    if (!VirtualProtect(trampoline, kTrampolineSize, PAGE_EXECUTE_READ,
+            &trampolineProtection)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return false;
+    }
+
+    DWORD targetProtection = 0;
+    if (!VirtualProtect(target, expected.size(), PAGE_EXECUTE_READWRITE,
+            &targetProtection)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return false;
+    }
+    g_enemyUpdateTrampoline = trampoline;
+    WriteAbsoluteJump(target, reinterpret_cast<void*>(HookedEnemyUpdate));
+    target[14] = 0x90;
+    FlushInstructionCache(GetCurrentProcess(), target, expected.size());
+    DWORD ignored = 0;
+    VirtualProtect(target, expected.size(), targetProtection, &ignored);
+    return true;
+}
+
 } // namespace
 
 bool InstallGameOverlayHook()
 {
+    const bool enemyInstalled = InstallEnemyUpdateHook();
     if (g_autoBombRelay)
-        return true;
+        return enemyInstalled;
+
+    if (!enemyInstalled)
+        g_patchError = true;
 
     auto* target = ResolveGameAddress<unsigned char>(
         GameAddress::AutoBombInputCheck);
@@ -378,7 +451,7 @@ bool InstallGameOverlayHook()
     DWORD ignored = 0;
     VirtualProtect(target, kAutoBombInputCheckSize, oldProtection, &ignored);
     g_autoBombRelay = relay;
-    return true;
+    return enemyInstalled;
 }
 
 void UpdateAndDrawGameOverlayUi()
@@ -396,10 +469,12 @@ void UpdateAndDrawGameOverlayUi()
     ToggleRequested(g_lockPower,
         foreground && (GetAsyncKeyState(VK_F4) & 1), ApplyPower);
     if (foreground && (GetAsyncKeyState(VK_F5) & 1))
-        g_autoBomb = !g_autoBomb;
+        g_lockTime = !g_lockTime;
     if (foreground && (GetAsyncKeyState(VK_F6) & 1))
-        g_everlastingBgm = !g_everlastingBgm;
+        g_autoBomb = !g_autoBomb;
     if (foreground && (GetAsyncKeyState(VK_F7) & 1))
+        g_everlastingBgm = !g_everlastingBgm;
+    if (foreground && (GetAsyncKeyState(VK_F8) & 1))
         g_noBomb = !g_noBomb;
 
     // Match thprac's "lock lives / no continue" mode: retain the stock death
@@ -410,12 +485,6 @@ void UpdateAndDrawGameOverlayUi()
     if (!ApplyLives(livesPatchWanted))
         g_patchError = true;
 
-    // Keep the code patch scoped to an enhanced Practice run. In particular,
-    // entering native spell practice or a normal game restores the stock path.
-    const bool bgmPatchWanted = g_everlastingBgm && IsEnhancedPracticeRunActive();
-    if (!ApplyEverlastingBgm(bgmPatchWanted))
-        g_patchError = true;
-    UpdateBgmPositionTracking(bgmPatchWanted);
     DrawAutoShootIndicator();
 
     if (!g_windowVisible)
@@ -423,24 +492,27 @@ void UpdateAndDrawGameOverlayUi()
 
     ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f),
         ImGuiCond_Always, ImVec2(0.0f, 0.0f));
-    ImGui::SetNextWindowBgAlpha(0.72f);
+    ImGui::SetNextWindowBgAlpha(0.50f);
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_NoFocusOnAppearing;
+        ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs;
     if (ImGui::Begin("##th06nc-game-overlay", nullptr, flags)) {
-        bool changed = ImGui::Checkbox(S(Invincible), &g_invincible);
-        ApplyCheckbox(g_invincible, changed, ApplyInvincible);
-        ImGui::Checkbox(S(LockLives), &g_lockLives);
-        changed = ImGui::Checkbox(
-            S(LockBombs), &g_lockBombs);
-        ApplyCheckbox(g_lockBombs, changed, ApplyBombs);
-        changed = ImGui::Checkbox(
-            S(LockPower), &g_lockPower);
-        ApplyCheckbox(g_lockPower, changed, ApplyPower);
-        ImGui::Checkbox(S(AutoBomb), &g_autoBomb);
-        ImGui::Checkbox(S(EverlastingBgm), &g_everlastingBgm);
-        ImGui::Checkbox(S(DisableBomb), &g_noBomb);
+        const auto drawState = [](bool enabled, const char* label) {
+            if (enabled)
+                ImGui::TextColored(ImVec4(0.20f, 1.0f, 0.20f, 1.0f),
+                    "%s", label);
+            else
+                ImGui::TextUnformatted(label);
+        };
+        drawState(g_invincible, S(Invincible));
+        drawState(g_lockLives, S(LockLives));
+        drawState(g_lockBombs, S(LockBombs));
+        drawState(g_lockPower, S(LockPower));
+        drawState(g_lockTime, S(LockTime));
+        drawState(g_autoBomb, S(AutoBomb));
+        drawState(g_everlastingBgm, S(EverlastingBgm));
+        drawState(g_noBomb, S(DisableBomb));
         if (g_patchError)
             ImGui::TextDisabled("%s", S(PatchUnsupported));
     }
@@ -457,33 +529,9 @@ bool IsBombInputSuppressed()
     return g_noBomb;
 }
 
-int64_t BeginEverlastingBgmLoad(void* audioState, const char* path)
+void PrepareEverlastingBgmForInitialization(bool enhancedRetry)
 {
-    if (!audioState || !path || !g_everlastingBgm ||
-        !IsEnhancedPracticeRunActive() || g_trackedBgmPosition < 0 ||
-        g_trackedBgmPath != path)
-        return -1;
-
-    // Native teardown may leave the old filename cached after disposing its
-    // handle. Force BgmLoad through the real open path instead of accepting a
-    // stale same-name stream.
-    *reinterpret_cast<char*>(static_cast<std::byte*>(audioState) + 0x29C) = '\0';
-    return g_trackedBgmPosition;
-}
-
-void EndEverlastingBgmLoad(const char* path, int64_t resumePosition)
-{
-    if (path)
-        g_trackedBgmPath = path;
-    if (resumePosition < 0)
-        return;
-
-    const auto* handle = ResolveGameAddress<int32_t>(GameAddress::BgmHandle);
-    auto seek = reinterpret_cast<int(__fastcall*)(int64_t, int32_t)>(
-        ResolveGameAddress<void>(GameAddress::BgmSeek));
-    if (!handle || *handle == -1 || !seek || seek(resumePosition, *handle) < 0) {
-        g_trackedBgmPosition = -1;
-        return;
-    }
-    g_trackedBgmPosition = resumePosition;
+    if (auto* keepBgm = ResolveGameAddress<uint8_t>(GameAddress::KeepBgm))
+        *keepBgm = static_cast<uint8_t>(
+            enhancedRetry && g_everlastingBgm);
 }

@@ -3,8 +3,10 @@
 #include "game_overlay.h"
 #include "hitbox_capture.h"
 #include "keyboard_input.h"
+#include "locale.h"
 #include "practice_menu.h"
 #include "practice_jump.h"
+#include "replay_support.h"
 #include "ui.h"
 
 #include "imgui.h"
@@ -23,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
     HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -30,6 +33,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
 namespace {
 
 enum class Renderer : LONG { None, D3D9, D3D11 };
+
+ImVector<ImWchar> g_fontGlyphRanges;
 
 using GetProcAddressFn = FARPROC(WINAPI*)(HMODULE, LPCSTR);
 using CreateDXGIFactoryFn = HRESULT(WINAPI*)(REFIID, void**);
@@ -83,6 +88,9 @@ std::atomic<bool> g_visible{false};
 std::atomic<bool> g_gameStretchEnabled{false};
 HWND g_window = nullptr;
 WNDPROC g_oldWndProc = nullptr;
+bool g_windowDragging = false;
+POINT g_dragStartMouse{};
+RECT g_dragStartWindow{};
 
 IDXGISwapChain* g_dx11SwapChain = nullptr;
 ID3D11Device* g_dx11Device = nullptr;
@@ -206,9 +214,64 @@ bool IsKeyboardMessage(UINT message)
 
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    // Keep the game out of Windows' modal caption-drag loop. The stock loop
+    // stops gameplay updates and is observed by the game as an automatic
+    // pause, so move the window ourselves while capture is held instead.
+    switch (message) {
+    case WM_NCLBUTTONDOWN:
+        if (wParam == HTCAPTION) {
+            g_windowDragging = true;
+            SetCapture(hwnd);
+            GetCursorPos(&g_dragStartMouse);
+            GetWindowRect(hwnd, &g_dragStartWindow);
+            return 0;
+        }
+        break;
+    case WM_MOUSEMOVE:
+    case WM_NCMOUSEMOVE:
+        if (g_windowDragging) {
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            SetWindowPos(hwnd, nullptr,
+                g_dragStartWindow.left + cursor.x - g_dragStartMouse.x,
+                g_dragStartWindow.top + cursor.y - g_dragStartMouse.y,
+                0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            return 0;
+        }
+        break;
+    case WM_LBUTTONUP:
+    case WM_NCLBUTTONUP:
+        if (g_windowDragging) {
+            g_windowDragging = false;
+            if (GetCapture() == hwnd)
+                ReleaseCapture();
+            return 0;
+        }
+        break;
+    case WM_SIZE:
+        if (wParam == SIZE_MINIMIZED) {
+            g_windowDragging = false;
+            if (GetCapture() == hwnd)
+                ReleaseCapture();
+        }
+        break;
+    case WM_CAPTURECHANGED:
+    case WM_CANCELMODE:
+        g_windowDragging = false;
+        break;
+    case WM_SYSCOMMAND:
+        // Pressing Alt alone normally activates the system menu, which makes
+        // this build enter its focus-loss/automatic-pause path.
+        if ((wParam & 0xFFF0u) == SC_KEYMENU)
+            return 0;
+        break;
+    default:
+        break;
+    }
+
     if (g_renderer.load() != Renderer::None &&
         (g_visible.load() || IsPracticeMenuReplacementActive() ||
-            IsGameOverlayVisible())) {
+            IsGameOverlayVisible() || IsPracticePauseUiVisible())) {
         ImGui_ImplWin32_WndProcHandler(hwnd, message, wParam, lParam);
         const ImGuiIO& io = ImGui::GetIO();
         if ((IsMouseMessage(message) && io.WantCaptureMouse) ||
@@ -243,11 +306,21 @@ bool InitializeWindow(HWND window)
     font_cfg.OversampleV = 2;
     ImGuiIO& io = ImGui::GetIO();
 
+    ImFontGlyphRangesBuilder glyphBuilder;
+    glyphBuilder.AddRanges(io.Fonts->GetGlyphRangesDefault());
+    std::string localizedGlyphText;
+    Locale::Instance().AppendAllGlyphText(localizedGlyphText);
+    AppendKeyBindingGlyphText(localizedGlyphText);
+    glyphBuilder.AddText(localizedGlyphText.c_str());
+    glyphBuilder.AddText("中文日本語"); // Language combo labels outside Locale maps.
+    g_fontGlyphRanges.clear();
+    glyphBuilder.BuildRanges(&g_fontGlyphRanges);
+
     ImFont* font = io.Fonts->AddFontFromFileTTF(
         "C:\\Windows\\Fonts\\msyh.ttc",
         26.0f,
         &font_cfg,
-        io.Fonts->GetGlyphRangesChineseFull()
+        g_fontGlyphRanges.Data
     );
 
     if (!font)
@@ -278,6 +351,9 @@ bool InitializeWindow(HWND window)
 
 void UndoWindowInitialization()
 {
+    g_windowDragging = false;
+    if (g_window && GetCapture() == g_window)
+        ReleaseCapture();
     if (g_window && g_oldWndProc)
         SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_oldWndProc));
     g_window = nullptr;
@@ -668,11 +744,14 @@ void BeginUiFrame(const char* rendererName)
     const bool practiceMenuActive = IsPracticeMenuReplacementActive();
     ImGuiIO& io = ImGui::GetIO();
     io.MouseDrawCursor = g_visible.load() || practiceMenuActive ||
-        IsGameOverlayVisible();
+        IsGameOverlayVisible() || IsPracticePauseUiVisible();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
     UpdateAndDrawGameOverlayUi();
     DrawCapturedHitboxes();
+    // The full-screen F10 panel owns the foreground layer. Draw Pause first
+    // so it can never float above that panel when both states are active.
+    DrawPracticePauseUi();
     if (g_visible.load()) {
         // Draw this full-screen window translucently. Keeping the alpha scoped
         // here leaves the Practice UI fully opaque when both are open.
@@ -1064,6 +1143,7 @@ DWORD WINAPI OverlayWorker(void*)
     InstallPracticeMenuHook();
     InstallKeyboardInputHook();
     InstallGameOverlayHook();
+    InstallReplaySupportHooks();
     InstallCollisionCaptureHook();
     for (int i = 0; i < 400 && g_renderer.load() == Renderer::None; ++i) {
         RecoverAlreadyResolvedExports();

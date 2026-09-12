@@ -9,6 +9,8 @@ the most important entries; it does not replace byte verification in code.
 | --- | --- | --- |
 | `+0x10870` | `BulletManagerUpdate` | Updates the bullet manager; exposes the active bullet pool. |
 | `+0x12BE0` | `ActionInputUpdate` | Builds the logical action word used by gameplay/replay. |
+| `+0x127D0` | `KeyboardActionMerge` | Receives the keyboard word, then ORs native controller input into it. |
+| `+0x35850` | `FinalSpellRage` | Selects QED 495's phase from the enemy-local age. |
 | `+0x36260` | `EnemyTimelineUpdate` | Dispatches stage timeline records and native spell-practice spawning. |
 | `+0x3A9C0` | `PlayerInitialize` | Final common player/resource initialization used on entry and restart. |
 | `+0x68820` | `PlayerUpdate` | Player state machine, Bomb activation, death and respawn. |
@@ -42,6 +44,7 @@ the most important entries; it does not replace byte verification in code.
 | `+0x506AD0` | two `float`s | Player stage-space position. |
 | `+0x506AEC` | `float` | Player collision radius. |
 | `+0x506C38` | `uint8_t` | Player state: 0 normal, 1 entry, 2 DIE, 3 respawn. |
+| `+0xA6EC48` | `uint16_t` | Native held-direction repeat pulse used by menus. |
 | `+0xA6EC60` | `uint32_t` | Current logical/menu action bits. |
 | `+0xA6EC64` | `uint32_t` | Previous logical/menu action bits. |
 | `+0xA6EB78` | pointer | Writable loaded ECL buffer used by the jump patcher. |
@@ -89,4 +92,3 @@ The bullet pool contains `0x280` entries beginning at `bulletManager+0x8`,
 with stride `0x620`. The project treats only native active states as drawable;
 the field at bullet `+0x618` is a graze-completion marker and is not a general
 collision-enable flag.
-

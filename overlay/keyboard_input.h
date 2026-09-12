@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 // Installs the game's central keyboard-update detour at
 // GameAddress::KeyboardUpdate.
 // Keep input transformations in this module so remapping/macros can be added
@@ -13,3 +15,8 @@ bool IsGameProcessForeground();
 bool IsAutoShootEnabled();
 void SetAutoShootEnabled(bool enabled);
 bool IsAutoShooting();
+bool IsRetryKeyPressed();
+bool IsExitKeyPressed();
+bool IsConfirmKeyPressed();
+void DrawKeyBindingUi();
+void AppendKeyBindingGlyphText(std::string& output);

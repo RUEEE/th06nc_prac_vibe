@@ -2,6 +2,7 @@
 
 #include <array>
 #include <map>
+#include <string>
 
 enum class Language : int {
     Chinese,
@@ -20,6 +21,29 @@ enum class LocaleText {
     F10Hint,
     ShowDemo,
     AutoShoot,
+    KeyBindings,
+    KeyUp,
+    KeyDown,
+    KeyLeft,
+    KeyRight,
+    KeySlow,
+    KeyShoot,
+    KeyBomb,
+    KeySkip,
+    KeyAutoShoot,
+    KeyRetry,
+    KeyExit,
+    KeyConfirm,
+    ArrowKeyPreset,
+    WasdKeyPreset,
+    SocdMode,
+    SocdNone,
+    SocdLastInput,
+    SocdFirstInput,
+    SocdNeutral,
+    CurrentKey,
+    ChooseKey,
+    PressAKey,
     ShowHitboxes,
     ApplyStretch,
     StretchHelp,
@@ -29,10 +53,23 @@ enum class LocaleText {
     LockLives,
     LockBombs,
     LockPower,
+    LockTime,
     AutoBomb,
     EverlastingBgm,
     DisableBomb,
     PatchUnsupported,
+    PauseMenu,
+    Resume,
+    Restart,
+    SaveReplayAndExit,
+    ExitWithoutReplay,
+    ReplaySaveHint,
+    ReplayFileHint,
+    ReplayHook,
+    ReimuA,
+    ReimuB,
+    MarisaA,
+    MarisaB,
     PracticeSetup,
     Mode,
     Original,
@@ -71,6 +108,10 @@ enum class LocaleText {
     Graze,
     Point,
     FakeShot,
+    Raging495,
+    DefaultPattern,
+    FastPattern,
+    SlowPattern,
     Stage4Books,
     Fixed,
     MirrorLastThree,
@@ -109,6 +150,7 @@ public:
     const char* Get(LocaleText text) const;
     const char* GetJump(int key, int difficulty) const;
     const char* GetJump(int key, int difficulty, int fakeShot) const;
+    void AppendAllGlyphText(std::string& output) const;
 
 private:
     Locale();

@@ -1,6 +1,6 @@
 # Backspace helper options
 
-Backspace toggles a compact always-auto-sized ImGui window. F1-F7 hotkeys work
+Backspace toggles a compact always-auto-sized ImGui window. F1-F8 hotkeys work
 while the game is foreground; their state persists while the game process is
 running.
 
@@ -45,12 +45,23 @@ stores rather than continually rewriting the global:
 | `+0x68BBE` | Minimum-power clamp store. |
 | `+0x68D16` | Alternate death-path power store. |
 
-## F5: Auto-Bomb
+## F5: Lock Time
+
+The enemy-update callback at RVA `+0x373B0` snapshots the global timeline at
+RVA `+0xBADF4C` and the local timer of each of the 256 enemy slots. After the
+native callback, the timeline and timers belonging to active slots are
+restored. Stages 1, 2, 4, and 5 retain the zxxsmart midboss-introduction
+exception that advances the timeline to the required interrupt point;
+otherwise an introduction could remain locked forever.
+
+Time locking is scoped to an active enhanced-Practice run.
+
+## F6: Auto-Bomb
 
 The hook at RVA `+0x689ED` preserves all native checks that precede the X-edge
 test, then conditionally jumps to RVA `+0x68A11`. It is disabled during replay
-playback and when F7 is active. No current/previous input bits are fabricated,
-so generated input cannot enter a replay.
+playback. No current/previous input bits are fabricated, so generated input
+cannot enter a replay.
 
 The game has a deathbomb countdown at `player+0x773C`, initialized to 8 on
 collision. Modes that reject deathbombing before `+0x689ED` remain rejected;
@@ -75,23 +86,44 @@ if (!bombCallbackActive && nativeBombGateAllows() &&
 The project's relay replaces only the two input-edge tests. It does not move
 the branch after `nativeBombGateAllows()`.
 
-F1 and F5 are naturally mutually limiting: if F1 prevents the DIE store, F5
+F1 and F6 are naturally mutually limiting: if F1 prevents the DIE store, F6
 never observes a death state.
 
-## F6: Everlasting BGM
+## F7: Everlasting BGM
 
-RVA `+0x3A313` calls the native BGM stop routine when Escape opens pause. F6
-NOPs only this call, and only during enhanced Practice. Restart loading is left
-native; the BGM path and playback position are tracked and restored after the
-new stream opens. On leaving practice the code patch and tracking state are
-cleared, restoring normal title/menu behavior.
+RVA `+0xAA1E8C` is the game's native `KeepBgm` byte. As in the zxxsmart
+implementation, an explicit enhanced-retry ownership flag survives the native
+Practice flag's temporary reset. `KeepBgm` is set when state 12 is requested
+and reaffirmed before the common initializer; it is explicitly cleared on
+first entry, normal/native-practice initialization, save/exit, and enhanced-
+Practice exit. The custom pause menu does not run the native pause-stop path,
+so no audio-call patch or manual stream seek is required.
 
-## F7: Disable Bomb
+## F8: Disable Bomb
 
-F7 is implemented in logical input generation, not by disabling the physical X
-key. Live Bomb bit `0x2` is removed after native action construction. Menus can
-still use X, no prohibited Bomb is recorded, and replay playback can display
-Bombs recorded elsewhere.
+F8 removes logical Bomb bit `0x2` only from live input after native action
+construction. It does not disable the physical key in menus and does not alter
+Bomb actions already stored in replay playback. Auto-Bomb also checks this
+flag before entering the native deathbomb-success branch.
+
+## Comparison with zxxsmart/thprac-th06nc
+
+The visible Backspace overlay now follows the fork's compact presentation: a
+top-right, input-transparent list with enabled entries colored green. The
+underlying implementations intentionally remain different:
+
+| Shared option | This project | zxxsmart reference |
+| --- | --- | --- |
+| Invincible | Byte-checks and NOPs the two confirmed bullet/laser DIE-state stores | On every player callback, forces state 0/3 to state 3 with timer 2 |
+| Lock lives | Only at zero lives, patches the game-over branch and decrement so the ordinary miss/respawn path remains | Snapshots the value when enabled, temporarily supplies one life at zero, then restores the snapshot after PlayerUpdate |
+| Lock Bombs | NOPs the native Bomb decrement instruction | Snapshots the counter and restores it around player updates |
+| Lock Power | NOPs three confirmed death-path Power stores | Snapshots Power and restores it around player updates |
+| Auto Bomb | Diverts the native input check directly to the deathbomb-success branch; disabled in replay playback | Injects a logical Bomb edge while state is DIE; its timestamped option state is replayed by the fork |
+| Time Lock | Restores the timeline and active enemy-local timers around EnemyUpdate, including the midboss exception | Same algorithm |
+| Persistent BGM | Sets and clears the native KeepBgm byte at enhanced-practice initialization boundaries | Sets the native KeepBgm byte for compatible practice restarts |
+
+F1-F7 match the reference ordering; this project retains Disable Bomb as F8.
+Runtime Backspace states remain excluded from replay metadata.
 
 ## Patch-group invariants
 

@@ -23,6 +23,9 @@ for re-auditing a future executable revision.
 - [hitboxes-and-rendering.md](hitboxes-and-rendering.md): bullet/laser capture,
   recovered collision data, coordinate conversion, black background, and
   stretch post-processing.
+- [replay-and-reference-comparison.md](replay-and-reference-comparison.md):
+  Enhanced-Practice ESC flow, embedded replay trailer, loading rules, and a
+  comparison with `zxxsmart/thprac-th06nc`.
 
 ## Address notation and confidence
 
@@ -43,6 +46,7 @@ be rechecked when more call sites become available.
 - `overlay/game_overlay.cpp`: Backspace helper patches.
 - `overlay/keyboard_input.cpp`: logical-input and replay-aware transforms.
 - `overlay/hitbox_capture.cpp`: collision and rendering observations.
+- `overlay/replay_support.cpp`: custom pause state, native save routing, and
+  embedded replay-trailer serialization/restoration.
 - `analysis/th06nc_spell_practice_report.md` in the parent analysis workspace:
   original native spell-practice disassembly report.
-

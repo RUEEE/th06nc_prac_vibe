@@ -14,8 +14,12 @@ enum class GameAddress : uintptr_t {
     StageDrawHigh = 0x78290,             // Upper stage-background draw layer.
     StageDrawLow = 0x78390,              // Lower stage-background draw layer.
     ActionInputUpdate = 0x12BE0,         // Builds the per-frame logical action bitfield.
+    KeyboardActionMerge = 0x127D0,       // Receives keyboard actions, then merges controller input.
     KeyboardUpdate = 0xAE180,            // Central 256-key polling/update routine.
     EnemyTimelineUpdate = 0x36260,       // Advances/dispatches the active ECL timeline.
+    EnemyUpdate = 0x373B0,               // Updates all 256 enemy slots and their local timers.
+    FinalSpellRage = 0x35850,            // QED 495 native phase-selection callback.
+    GameUpdate = 0x3A210,               // Main in-game update callback; owns Pause/state transitions.
     PlayerInitialize = 0x3A9C0,         // Final common player/resource initialization.
     PlayerUpdate = 0x68820,              // Per-frame player update.
     AutoBombInputCheck = 0x689ED,        // Native Bomb input-edge check; auto-Bomb diverts here.
@@ -23,9 +27,7 @@ enum class GameAddress : uintptr_t {
     DeathBombBranch = 0x68A11,           // Native deathbomb path after the X-key edge checks.
     StageBgmLoadCall = 0x3B61B,          // Loads the selected stage/Boss BGM during initialization.
     BgmLoad = 0x7BC80,                   // Opens the named BGM and starts streaming playback.
-    PauseBgmStopCall = 0x3A313,          // Stops the BGM channel when ESC opens Pause.
-    BgmGetPosition = 0xC4A10,            // Returns the current audio position for a handle.
-    BgmSeek = 0xC9930,                   // Seeks an audio handle to a saved position.
+    KeepBgm = 0xAA1E8C,                  // Native retry flag that preserves the active BGM stream.
     StageBackgroundFastForward = 0x77550,// Native spell-practice background/title pre-advance.
     StageBackgroundPracticeCheck = 0x3B4AE, // Gates the native background pre-advance call.
     StageBackgroundFastForwardCall = 0x3B4B7, // Native call site after ECL timeline setup.
@@ -48,6 +50,8 @@ enum class GameAddress : uintptr_t {
     PracticeConfirmTransitionCall = 0x4C183, // Enters the native two-step confirmation screen.
     PracticeMenuTransition = 0x4DA80,    // Native menu transition used outside enhanced Practice.
     PracticeStageScoreDrawCall = 0x54E60, // Draws the upper-right STAGE/high-score rows.
+    ReplayWrite = 0x39610,              // Serializes a complete native .rpy buffer to disk.
+    ResultInitialize = 0x73D50,         // Initializes result/replay-save menu assets and state.
     MenuStartFade = 0x76050,             // Starts the 30-frame transition into gameplay.
     MenuFlushSounds = 0x76A30,           // Flushes queued menu sounds before gameplay.
     MenuQueueSound = 0x76AF0,            // Queues a native menu sound by id.
@@ -56,6 +60,7 @@ enum class GameAddress : uintptr_t {
     CurrentShotType = 0x4F1E81,          // 0 = A, 1 = B.
     CurrentStage = 0x4F1E84,             // Active zero-based stage/group index.
     CurrentPower = 0x4F1E88,             // Current power, stored as a 16-bit value.
+    ReplayModeFlag = 0x4F278C,           // Nonzero for the lifetime of native replay playback.
     PracticeModeFlag = 0x4F27B4,         // Nonzero while a native Practice run is active.
     NativeSpellPracticeFlag = 0x4F27B5,  // Nonzero only for the game's own spell practice.
     CurrentSpellId = 0x4F27B8,           // Native spell-practice target ID.
@@ -71,14 +76,17 @@ enum class GameAddress : uintptr_t {
     CurrentPlayerState = 0x506C38,       // Player state byte: normal 0, entry 1, DIE 2, respawn 3.
     KeyboardState = 0x54343C,            // Raw 256-byte keyboard state.
     KeyboardMetadata = 0x545540,         // Cached valid/modifier keyboard fields.
+    MenuInputRepeat = 0xA6EC48,          // Nonzero on the native held-direction repeat frame.
     MenuInputCurrent = 0xA6EC60,         // Current menu action bitfield.
     MenuInputPrevious = 0xA6EC64,        // Previous menu action bitfield.
+    TimelineFrame = 0xBADF4C,            // Current ECL timeline frame.
     LoadedEclFile = 0xA6EB78,            // Pointer to the writable loaded ecldataN buffer.
     MenuSoundState = 0x509660,           // Native menu sound queue/state object.
     MenuSoundPendingFlag = 0x509668,     // Pending sound transition flag.
     MenuSoundSpecialFlag = 0x50967C,     // Selects the alternate sound transition path.
     BgmHandle = 0x50966C,                // Active BGM audio handle, or -1.
     BgmCurrentPath = 0xC21C0C,           // Current BGM path cached by BgmLoad.
+    ReplayPath = 0x4FF164,               // Native replay path selected by the replay menu.
 
     InitialLivesBackup = 0xC21DE0,       // Value later restored into CurrentLives.
     InitialBombsBackup = 0xC21DE1,       // Value later restored into CurrentBombs.
@@ -89,6 +97,10 @@ enum class GameAddress : uintptr_t {
 
     GameTimerFrequency = 0xC220F8,       // Source value used by the FPS limiter.
     GameTimerPeriod = 0xC22100,          // Effective FPS limiter period.
+    CurrentGameState = 0xC21D98,         // Supervisor state currently being updated.
+    NextGameState = 0xC21D9C,            // Requested supervisor state transition.
+    PausedFlag = 0x4F27B0,               // Native gameplay pause flag.
+    GameOverFlag = 0x4F27B1,             // Native game-over transition flag.
 };
 
 // Fields inside the native main-menu object passed at +0x4BFB2.
