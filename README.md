@@ -119,9 +119,9 @@ ECL 修改前会验证关卡、文件大小和内容指纹，避免把某一面�
 - 可在全屏菜单中分别重绑上、下、左、右、低速、射击和 Bomb；支持下拉列表与“选择按键”直接捕获。
 - 重试、直接退出和菜单确认键也可修改（默认 R、Q、Enter）；确认键写入与 Z 相同的原生菜单确认位，但不会触发射击。
 - 自动射击时左上角显示 `A`，其逻辑输入可正常写入 Replay。
-- 仅练习模式可开启判定显示，包含弹幕、矩形判定、自机判定和旋转激光判定。
+- 仅练习模式可开启判定显示，包含弹幕、矩形判定、旋转激光、自机判定与擦弹范围；可调整并保存偏移、缩放和颜色。
 - 可调整游戏 FPS/速度。
-- D3D11 拉伸模式将游戏画面以右侧为锚点进行水平放大，ImGui 不参与拉伸。
+- D3D11 拉伸模式将游戏画面以右侧为锚点进行水平放大，判定显示同步变换而 ImGui 不参与拉伸；开关会保存到配置。
 
 #### Backspace 辅助菜单
 
@@ -147,8 +147,8 @@ ECL 修改前会验证关卡、文件大小和内容指纹，避免把某一面�
 #### 判定与画面工具
 
 - 遍历完整的 `0x280` 项弹幕池，并补充捕获矩形/特殊碰撞调用。
-- 支持旋转激光轮廓、中心点、尺寸文字、颜色、填充和坐标校准。
-- 判定绘制包含自机半径，尺寸文字保留弹幕原始半径/半宽高。
+- 支持旋转激光轮廓、中心点、尺寸文字、颜色、填充和可持久化的坐标校准。
+- 弹幕与矩形仅绘制自身半径/半宽高；自机单独按 `player + 0x774C` 绘制，并显示半径额外增加 20 的白色擦弹圈。
 - 可跳过高低两层舞台背景并仅将游戏区域清成黑色，不遮挡自机、敌人、弹幕和 HUD。
 - 同时支持 D3D11/DXGI 与 D3D9 的 ImGui 注入路径；当前画面拉伸后处理仅支持 D3D11。
 
@@ -288,9 +288,11 @@ Nonspell, Spell, and Frame.
 - Direction bindings support configurable SOCD handling: native/no filtering,
   last-input priority, first-input priority, or neutral on opposites. The SOCD
   selection is stored in the same input configuration.
-- Practice-only bullet, rectangle, player, and rotated-laser hitbox display.
+- Practice-only bullet, rectangle, rotated-laser, player-hitbox, and graze-range
+  display, with persistent offset, scale, and color controls.
 - Configurable FPS/game speed.
-- D3D11 right-anchored horizontal game stretch without stretching ImGui.
+- Persistent D3D11 right-anchored horizontal game stretch; hitboxes follow the
+  same transform while ImGui remains unstretched.
 
 #### Backspace helper menu
 
@@ -328,8 +330,11 @@ Nonspell, Spell, and Frame.
 
 - Reads the complete `0x280`-entry bullet pool and supplements it with captured
   rectangle/special collision calls.
+- Draws raw bullet radii and rectangle half-extents without player-radius
+  expansion. The player uses `player + 0x774C`; a transparent white circle at
+  player radius + 20 visualizes the graze range.
 - Draws rotated lasers, centers, dimensions, configurable colors/fills, and
-  calibrated stage coordinates.
+  persistent calibrated stage coordinates.
 - Can suppress both stage-background layers and clear only the playfield to
   black while preserving gameplay objects and HUD.
 - Supports D3D11/DXGI and D3D9 ImGui injection. The game-stretch post-process

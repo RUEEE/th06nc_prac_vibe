@@ -87,7 +87,7 @@ D3D9ResetFn g_realD3D9Reset = nullptr;
 SRWLOCK g_uiLock = SRWLOCK_INIT;
 std::atomic<Renderer> g_renderer{Renderer::None};
 std::atomic<bool> g_visible{false};
-std::atomic<bool> g_gameStretchEnabled{false};
+bool g_gameStretchEnabled = false;
 HWND g_window = nullptr;
 WNDPROC g_oldWndProc = nullptr;
 bool g_windowDragging = false;
@@ -112,6 +112,7 @@ HANDLE g_readyEvent = nullptr;
 bool g_diagnosticConsoleReady = false;
 bool g_debugConfigurationLoaded = false;
 bool g_debugEnabled = false;
+std::wstring g_configurationPath;
 LONG g_presentHookObserved = 0;
 LONG g_presentIdleReported = 0;
 LONG g_presentRenderRequested = 0;
@@ -135,6 +136,7 @@ void LoadDebugConfiguration()
     CreateDirectoryW(publisher.c_str(), nullptr);
     CreateDirectoryW(game.c_str(), nullptr);
     const std::wstring path = game + L"\\input.ini";
+    g_configurationPath = path;
 
     wchar_t value[16]{};
     const DWORD valueLength = GetPrivateProfileStringW(
@@ -147,6 +149,10 @@ void LoadDebugConfiguration()
     } else {
         g_debugEnabled = wcstol(value, nullptr, 10) != 0;
     }
+    g_gameStretchEnabled = GetPrivateProfileIntW(
+        L"Options", L"StretchMode", 0, path.c_str()) != 0;
+    WritePrivateProfileStringW(L"Options", L"StretchMode",
+        g_gameStretchEnabled ? L"1" : L"0", path.c_str());
     g_debugConfigurationLoaded = true;
 }
 
@@ -389,11 +395,21 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
         break;
     }
 
+    const bool fullScreenMenuVisible = g_visible.load();
     if (g_renderer.load() != Renderer::None &&
-        (g_visible.load() || IsPracticeMenuReplacementActive() ||
+        (fullScreenMenuVisible || IsPracticeMenuReplacementActive() ||
             IsGameOverlayVisible() || IsPracticePauseUiVisible())) {
         ImGui_ImplWin32_WndProcHandler(hwnd, message, wParam, lParam);
         const ImGuiIO& io = ImGui::GetIO();
+        // The full-screen settings window is modal from the game's point of
+        // view. WantCaptureKeyboard reflects the preceding ImGui frame, so
+        // relying on it alone leaks the first character after a numeric drag
+        // is double-clicked into text-entry mode. That game-side input can
+        // immediately invalidate the active editor. Once this window is open,
+        // give ImGui ownership of all client mouse and keyboard messages.
+        if (fullScreenMenuVisible &&
+            (IsMouseMessage(message) || IsKeyboardMessage(message)))
+            return 1;
         if ((IsMouseMessage(message) && io.WantCaptureMouse) ||
             (IsKeyboardMessage(message) && io.WantCaptureKeyboard))
             return 1;
@@ -665,7 +681,7 @@ bool EnsureStretchSource(const D3D11_TEXTURE2D_DESC& backBufferDesc)
 void ApplyGameStretchPostProcess(IDXGISwapChain* swapChain,
     ID3D11RenderTargetView* renderTarget)
 {
-    if (!g_gameStretchEnabled.load() || !g_dx11Context || !renderTarget ||
+    if (!g_gameStretchEnabled || !g_dx11Context || !renderTarget ||
         !CreateStretchPipeline())
         return;
 
@@ -1006,8 +1022,8 @@ HRESULT STDMETHODCALLTYPE HookSwapChainPresent(IDXGISwapChain* self, UINT syncIn
     // presentation path and leave the real game swap chain unused.
     const bool wantsOverlay = g_visible.load() ||
         IsPracticeMenuReplacementActive() || IsGameOverlayVisible() ||
-        IsPracticePauseUiVisible() || IsHitboxDisplayEnabled() ||
-        IsAutoShooting();
+        IsPracticePauseUiVisible() || IsHitboxDisplayActive() ||
+        IsAutoShooting() || IsGameStretchModeEnabled();
     if (!wantsOverlay) {
         if (InterlockedCompareExchange(&g_presentIdleReported, 1, 0) == 0)
             DebugMessage(L"Direct3D 11 Present: renderer initialization deferred until an overlay is visible");
@@ -1368,12 +1384,17 @@ bool IsOverlayDebugEnabled()
 
 bool IsGameStretchModeEnabled()
 {
-    return g_gameStretchEnabled.load();
+    return g_gameStretchEnabled;
 }
 
 void SetGameStretchModeEnabled(bool enabled)
 {
-    g_gameStretchEnabled.store(enabled);
+    if (g_gameStretchEnabled == enabled)
+        return;
+    g_gameStretchEnabled = enabled;
+    if (!g_configurationPath.empty())
+        WritePrivateProfileStringW(L"Options", L"StretchMode",
+            enabled ? L"1" : L"0", g_configurationPath.c_str());
 }
 
 void ClearStagePlayfieldBlack()

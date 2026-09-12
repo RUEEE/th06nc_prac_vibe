@@ -71,6 +71,7 @@ enum class GameAddress : uintptr_t {
     CurrentGraze = 0x4FF0CC,             // Current graze, stored as a 32-bit value.
     CurrentLives = 0x4FF0F0,             // Current lives byte.
     CurrentBombs = 0x4FF0F1,             // Current bombs byte.
+    PlayerObject = 0x4FF3A0,             // Static player object base.
     PlayerPosition = 0x506AD0,           // Current player stage position, two floats.
     PlayerHitboxRadius = 0x506AEC,       // Current player collision radius, float.
     CurrentPlayerState = 0x506C38,       // Player state byte: normal 0, entry 1, DIE 2, respawn 3.
@@ -112,6 +113,7 @@ enum class PracticeMenuField : ptrdiff_t {
 
 // Fields in runtime game objects rather than module-relative globals.
 enum class GameObjectField : ptrdiff_t {
+    PlayerPosition = 0x7730,              // Player stage position, two floats.
     PlayerCollisionRadius = 0x774C,       // Collision context's player radius, float.
 };
 

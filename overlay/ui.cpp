@@ -52,6 +52,8 @@ void DrawPracticeBaseUi(const char* rendererName)
     if (practiceActive) {
         if (ImGui::Checkbox(S(ShowHitboxes), &showHitboxes))
             SetHitboxDisplayEnabled(showHitboxes);
+        if (showHitboxes)
+            DrawHitboxDisplayControlsUi();
     } else {
         ImGui::TextDisabled("[ ] %s", S(ShowHitboxes));
     }
