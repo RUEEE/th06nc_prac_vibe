@@ -24,7 +24,7 @@
     X(int32_t, fakeShot, 0, 4)           \
     X(int32_t, raging495, 0, 4)          \
     X(int32_t, stage5Boss6Mode, 0, 5)    \
-    X(uint32_t, bookFixedMask, 0x3f, 4)
+    X(uint32_t, bookFixedMask, 0x0, 4)
 
 struct PracticeParam {
 #define TH06NC_DECLARE_PRACTICE_FIELD(type_, name_, default_, protocol_) \

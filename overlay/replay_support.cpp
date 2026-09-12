@@ -85,7 +85,8 @@ using ReplayWriter = void(__fastcall*)(const char*, void*, size_t);
 GameCallback g_nativeGameUpdate = nullptr;
 GameCallback g_nativeResultInitialize = nullptr;
 ReplayWriter g_nativeReplayWrite = nullptr;
-std::atomic<bool> g_pauseVisible{false};
+bool g_pauseVisible = false;
+bool g_last_pause_Visible = false;
 std::atomic<PauseAction> g_pauseAction{PauseAction::None};
 std::atomic<bool> g_pauseEscapeReleased{false};
 std::atomic<int> g_pauseNavigation{0};
@@ -479,6 +480,8 @@ int64_t __fastcall HookedGameUpdate(void* game)
 {
     if (!g_nativeGameUpdate)
         return 0;
+    g_last_pause_Visible = g_pauseVisible;
+
     const auto* replay = ResolveGameAddress<uint8_t>(GameAddress::ReplayModeFlag);
     if (replay && *replay != 0) {
         if (!g_replayConfigPrepared.load() && PreparePracticeReplayPlayback())
@@ -497,22 +500,22 @@ int64_t __fastcall HookedGameUpdate(void* game)
         *currentState == 2 && *nextState == 2;
 
     if (!canOwnPause) {
-        g_pauseVisible.store(false);
+        g_pauseVisible = false;
         g_pauseAction.store(PauseAction::None);
         return g_nativeGameUpdate(game);
     }
 
-    if (!g_pauseVisible.load() && paused && (!gameOver || *gameOver == 0) &&
+    if (!g_pauseVisible && paused && (!gameOver || *gameOver == 0) &&
         input && previous && (*input & kEscapeInput) != 0 &&
         (*previous & kEscapeInput) == 0) {
-        g_pauseVisible.store(true);
+        g_pauseVisible=true;
         g_pauseEscapeReleased.store(false);
         g_pauseNavigation.store(0);
         g_pauseHorizontal.store(0);
         g_pauseConfirm.store(false);
     }
 
-    if (!g_pauseVisible.load())
+    if (!g_pauseVisible)
         return g_nativeGameUpdate(game);
 
     // Capture logical menu input on the game-update thread, before the native
@@ -546,7 +549,7 @@ int64_t __fastcall HookedGameUpdate(void* game)
 
     const PauseAction action = g_pauseAction.exchange(PauseAction::None);
     if (action != PauseAction::None) {
-        g_pauseVisible.store(false);
+        g_pauseVisible = false;
         if (previous)
             *previous |= kEscapeInput;
         if (action == PauseAction::SaveAndExit) {
@@ -701,10 +704,8 @@ void CapturePracticeReplayStart()
 
 void DrawPracticePauseUi()
 {
-    static bool wasVisible = false;
     static bool settingsFocused = false;
-    if (!g_pauseVisible.load()) {
-        wasVisible = false;
+    if (!g_pauseVisible) {
         settingsFocused = false;
         return;
     }
@@ -726,15 +727,15 @@ void DrawPracticePauseUi()
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
         ImGuiWindowFlags_NoSavedSettings;
     const int navigation = g_pauseNavigation.exchange(0);
-    const int horizontal =
-        std::clamp(g_pauseHorizontal.exchange(0), -1, 1);
+    const int horizontal = std::clamp(g_pauseHorizontal.exchange(0), -1, 1);
     if (ImGui::Begin(S(PauseMenu), nullptr, flags)) {
         static int selected = 0;
-        if (!wasVisible) {
+        if (!g_last_pause_Visible) {
+            g_last_pause_Visible = g_pauseVisible;
             selected = 0;
+            settingsFocused = false;
             ImGui::SetScrollY(0.0f);
         }
-        wasVisible = true;
         constexpr int kPauseRowCount = 5;
         bool enteredSettings = false;
         if (!settingsFocused) {
@@ -829,5 +830,5 @@ void DrawPracticePauseUi()
 
 bool IsPracticePauseUiVisible()
 {
-    return g_pauseVisible.load();
+    return g_pauseVisible;
 }

@@ -159,10 +159,10 @@ Locale::Locale()
         {LocaleText::DisableBomb, L("[F8] 禁止丢B", "[F8] Disable bomb", "[F8] ボム禁止")},
         {LocaleText::PatchUnsupported, L("当前游戏版本不支持部分补丁", "Some patches are unsupported by this executable", "この実行ファイルでは一部のパッチを使用できません")},
         {LocaleText::PauseMenu, L("练习暂停", "Practice Pause", "練習ポーズ")},
-        {LocaleText::Resume, L("继续游戏（Esc）", "Resume (Esc)", "再開（Esc）")},
-        {LocaleText::Restart, L("重新开始（R）", "Restart (R)", "リスタート（R）")},
+        {LocaleText::Resume, L("继续游戏", "Resume", "再開")},
+        {LocaleText::Restart, L("重新开始", "Restart", "リスタート")},
         {LocaleText::SaveReplayAndExit, L("保存录像并退出", "Save replay and exit", "リプレイを保存して終了")},
-        {LocaleText::ExitWithoutReplay, L("直接退出（Esc+Q）", "Exit without replay (Esc+Q)", "リプレイを保存せず終了（Esc+Q）")},
+        {LocaleText::ExitWithoutReplay, L("直接退出", "Exit without replay", "リプレイを保存せず終了")},
         {LocaleText::ReplaySaveHint, L("退出后将进入游戏原生录像保存确认。", "After exiting, the native replay-save confirmation will open.", "終了後、ゲーム標準のリプレイ保存確認が開きます。")},
         {LocaleText::ReplayFileHint, L("练习参数保存在同一个 .rpy 文件中。", "Practice parameters are stored in the same .rpy file.", "練習パラメータは同じ.rpyファイルに保存されます。")},
         {LocaleText::ReplayHook, L("练习录像 Hook：%s", "Practice replay hook: %s", "練習リプレイHook：%s")},
@@ -193,6 +193,8 @@ Locale::Locale()
         {LocaleText::Spell, L("符卡", "Spell", "スペル")},
         {LocaleText::Frame, L("帧", "Frame", "フレーム")},
         {LocaleText::Chapter, L("章节", "Chapter", "チャプター")},
+        {LocaleText::Chapter_1, L("前半", "First Half", "前半")},
+        {LocaleText::Chapter_2, L("后半", "Second Half", "後半")},
         {LocaleText::TimelineTime, L("Timeline 时间：%d", "Timeline time: %d", "タイムライン時刻：%d")},
         {LocaleText::NoJump, L("当前面数 / 难度 / 类型无可用跳转", "No jump for this stage/difficulty/type", "このステージ・難易度・種類には移動先がありません")},
         {LocaleText::Jump, L("跳转", "Jump", "移動先")},
@@ -266,6 +268,7 @@ Locale::Locale()
         L("彩符「彩光乱舞」", "Colorful Sign \"Vivid Chaotic Dance\"", "彩符「彩光乱舞」")));
     same(TH06NC_ST3_BOSS7, L("彩符「极彩台风」", "Colorful Sign \"Dazzling Color Typhoon\"", "彩符「極彩颱風」"));
 
+    same(TH06NC_ST4_BOOKS, L("大书库", "Books", "魔導書"));
     same(TH06NC_ST4_MID1, MidNonspell(1));
     same(TH06NC_ST4_BOSS1, BossNonspell(1));
     same(TH06NC_ST4_BOSS2, RandomSpell(1));

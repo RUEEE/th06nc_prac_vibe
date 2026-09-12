@@ -20,7 +20,7 @@ enum JumpEnum {
     TH06NC_ST3_MID1, TH06NC_ST3_MID2,
     TH06NC_ST3_BOSS1, TH06NC_ST3_BOSS2, TH06NC_ST3_BOSS3, TH06NC_ST3_BOSS4,
     TH06NC_ST3_BOSS5, TH06NC_ST3_BOSS6, TH06NC_ST3_BOSS7,
-    TH06NC_ST4_MID1,
+    TH06NC_ST4_BOOKS,TH06NC_ST4_MID1,
     TH06NC_ST4_BOSS1, TH06NC_ST4_BOSS2, TH06NC_ST4_BOSS3, TH06NC_ST4_BOSS4,
     TH06NC_ST4_BOSS5, TH06NC_ST4_BOSS6, TH06NC_ST4_BOSS7,
     TH06NC_ST5_MID1, TH06NC_ST5_MID2,
@@ -46,7 +46,8 @@ struct BossJump {
     int diff;
 };
 
-const std::map<int, std::vector<int>>& StageChapterTimes();
+const std::map<int, std::pair<std::vector<int>, std::vector<int>>>& StageChapterTimes();
+int GetChapterTime(int stage, int chapter);
 const std::vector<BossJump>& BossJumps();
 
 // Queued during practice selection and consumed once by a later timeline
@@ -55,7 +56,7 @@ void QueueStagePracticeJump(int stage, int timelineTime);
 void QueueStage4BooksPracticeJump(int timelineTime, unsigned fixedMask,
     const int* x, const int* y);
 void QueueBossPracticeJump(int stage, JumpEnum jump, bool dialogue,
-    int fakeShot = 0, int stage5Boss6Mode = 0);
+    int fakeShot = 0, int stage5Boss6Mode = 0, unsigned fixedMask = 0, const int* x = nullptr, const int* y = nullptr);
 void ClearQueuedPracticeJump();
 
 bool InstallPracticeJumpHook();

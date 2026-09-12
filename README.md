@@ -11,6 +11,11 @@
 
 ## 更新日志 / Changelog
 
+### 0.3.2 — 2026-09-12（9.12）
+- 修复部分道中，修复 ESC 菜单。
+
+- Fixed some portion. Fixed ESC menu. 
+
 ### 0.3.1 — 2026-09-12（9.12）
 
 - 修复 Windows 7 下 DLL 注入后 ImGui 不显示的问题：改用 MinHook 挂接

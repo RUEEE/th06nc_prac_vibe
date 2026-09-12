@@ -165,7 +165,9 @@ J(BOSS_NONSPELL, TH06NC_ST3_BOSS5, 3, kMainDifficulties),
 J(BOSS_SPELL, TH06NC_ST3_BOSS6, 3, kMainDifficulties),
 J(BOSS_SPELL, TH06NC_ST3_BOSS7, 3, 14),
 
+J(MID_BOSS_NONSPELL, TH06NC_ST4_BOOKS, 4, kMainDifficulties),
 J(MID_BOSS_NONSPELL, TH06NC_ST4_MID1, 4, kMainDifficulties),
+
 J(BOSS_NONSPELL, TH06NC_ST4_BOSS1, 4, kMainDifficulties),
 J(BOSS_SPELL, TH06NC_ST4_BOSS2, 4, kMainDifficulties),
 J(BOSS_SPELL, TH06NC_ST4_BOSS3, 4, kMainDifficulties),
@@ -224,7 +226,7 @@ J(BOSS_SPELL, TH06NC_ST7_BOSS21, 7, kExtraDifficulty),
 #undef J
 
 bool ApplyBossPatch(EclWriter& ecl, JumpEnum section, bool dialogue,
-    int fakeShot, int stage5Boss6Mode, int& timelineTime)
+    int fakeShot, int stage5Boss6Mode, unsigned fixedMask, const int* bookX, const int* bookY, int& timelineTime)
 {
     auto ECLWarp = [&](int time) { timelineTime = time; };
     auto s2b_nd = [&]() {
@@ -413,7 +415,27 @@ bool ApplyBossPatch(EclWriter& ecl, JumpEnum section, bool dialogue,
                 << pair{0x5380, int16_t{0}};
         }
         break;
+    case TH06NC_ST4_BOOKS:
+        ECLWarp(3378 - 30);
+        {
+            constexpr size_t kFirstBookArguments = 0xf2f8;
+            constexpr size_t kBookInstructionSize = 0x1c;
+            for (int book = 0; book < 6; ++book) {
+                if ((fixedMask & (1u << book)) == 0)
+                    continue;
+                const size_t offset = kFirstBookArguments +
+                    kBookInstructionSize * book;
+                // enemy_create_random stores X/Y/Z as three consecutive
+                // floats. A fixed book must replace the complete -999.0f
+                // random-X sentinel, not merely its low 16 bits.
+                ecl << pair{ offset, static_cast<float>(
+                        bookX[book] + 192) }
+                    << pair{ offset + 4, static_cast<float>(
+                        bookY[book]) };
+            }
+        }
 
+        break;
     case TH06NC_ST4_MID1:
         ECLWarp(0xfda);
         break;
@@ -864,7 +886,7 @@ int __fastcall HookedTimelineUpdate(void* enemyManager)
                 timelineTime = -1;
                 ready = ApplyBossPatch(writer,
                     request.jump, request.dialogue, request.fakeShot,
-                    request.stage5Boss6Mode,
+                    request.stage5Boss6Mode, request.bookFixedMask, request.bookX.data(), request.bookY.data(),
                     timelineTime);
             } else {
                 // A transition can reach this hook once while the old ECL is
@@ -983,18 +1005,28 @@ bool InstallFinalSpellRageHook()
 
 } // namespace
 
-const std::map<int, std::vector<int>>& StageChapterTimes()
+std::map<int, std::pair<std::vector<int>, std::vector<int>>> kStageChapterTimes = {
+       {1, {{100 - 60, 594 - 60, 1174 - 60, 1554 - 60},{2312 - 60, 4372 - 60} }},
+       {2, {{240 - 60, 894 - 60},{ 3498 - 60, 4533 - 60} }},
+       {3, {{200 - 60, 910 - 60, 1530 - 60, 2622 - 60}, {3536 - 40, 3898 - 60, 4190 - 60, 5054 - 60, 5334 - 60, 5614 - 60} }},
+       {4, {{330 - 60, 1430 - 60, 2304 - 60, 3088 - 60}, {4858 - 50, 5698 - 60, 7380 - 60, 8300 - 60, 9730 - 60} }},
+       {5, {{310 - 60, 942 - 60, 2252 - 60}, {3774 - 60, 6734 - 60} }},
+       {6, {{340 - 60, 1459 - 60,2493 - 60},{}}},
+       {7, {{340 - 60, 1260 - 60, 2560 - 60, 3640 - 60}, {4763 - 60, 5893 - 60, 7273 - 60} }},
+};
+
+const std::map<int, std::pair<std::vector<int>, std::vector<int>>>& StageChapterTimes()
 {
-    const static std::map<int, std::vector<int>> kStageChapterTimes = {
-       {1, {100 - 60, 594 - 60, 1174 - 60, 1554 - 60, 2312 - 60, 4372 - 60}},
-       {2, {240 - 60, 894 - 60, 3498 - 60, 4533 - 60}},
-       {3, {200 - 60, 910 - 60, 1530 - 60, 2622 - 60, 3898 - 60, 4190 - 60, 5054 - 60, 5334 - 60, 5614 - 60}},
-       {4, {330 - 60, 1430 - 60, 2304 - 60, 3088 - 60, 3378 - 30, 4858 - 50, 6482 - 60, 7380 - 60, 8300 - 60, 9730 - 60}},
-       {5, {310 - 60, 942 - 60, 2252 - 60, 3774 - 60, 6734 - 60}},
-       {6, {340 - 60, 1459 - 60,2493 - 60}},
-       {7, {340 - 60, 1260 - 60, 2560 - 60, 3640 - 60, 4763 - 60, 5893 - 60, 7273 - 60}},
-    };
     return kStageChapterTimes;
+}
+
+int GetChapterTime(int stage, int chapter)
+{
+    std::pair<std::vector<int>, std::vector<int>>& chapters = kStageChapterTimes[stage];
+    if (chapter > chapters.first.size()){
+        return chapters.second[chapter - chapters.first.size() - 1];
+    }
+    return chapters.first[chapter - 1];
 }
 
 const std::vector<BossJump>& BossJumps()
@@ -1028,16 +1060,23 @@ void QueueStage4BooksPracticeJump(int timelineTime, unsigned fixedMask,
 }
 
 void QueueBossPracticeJump(int stage, JumpEnum jump, bool dialogue,
-    int fakeShot, int stage5Boss6Mode)
+    int fakeShot, int stage5Boss6Mode, unsigned fixedMask, const int* x, const int* y)
 {
-    g_practiceJumpRuntime.pending = {
+    PracticeJumpRequest request{
         .kind = RequestKind::Boss,
         .stage = stage,
         .jump = jump,
         .dialogue = dialogue,
         .fakeShot = fakeShot,
         .stage5Boss6Mode = stage5Boss6Mode,
+        .bookFixedMask = fixedMask,
     };
+    if(x && y)
+        for (int book = 0; book < 6; ++book) {
+            request.bookX[book] = x[book];
+            request.bookY[book] = y[book];
+        }
+    g_practiceJumpRuntime.pending = request;
 }
 
 void ClearQueuedPracticeJump()

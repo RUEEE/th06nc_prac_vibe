@@ -97,6 +97,8 @@ enum class LocaleText {
     Spell,
     Frame,
     Chapter,
+    Chapter_1,
+    Chapter_2,
     TimelineTime,
     NoJump,
     Jump,

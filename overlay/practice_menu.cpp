@@ -241,9 +241,9 @@ void QueueConfiguredPracticeJump()
     const int stage = g_practiceParam.stage + 1;
     if (g_practiceParam.warpTarget == 1) {
         const auto found = StageChapterTimes().find(stage);
-        if (found != StageChapterTimes().end() && !found->second.empty()) {
+        if (found != StageChapterTimes().end() && ((!found->second.first.empty()) || (!found->second.second.empty()))) {
             const int chapter = std::clamp(g_practiceParam.chapter, 1,
-                static_cast<int>(found->second.size()));
+                static_cast<int>(found->second.first.size() + found->second.second.size() ));
             if (stage == 4 && chapter == 4) {
                 int x[6]{};
                 int y[6]{};
@@ -251,19 +251,31 @@ void QueueConfiguredPracticeJump()
                     x[book] = g_practiceParam.bookX[book];
                     y[book] = g_practiceParam.bookY[book];
                 }
-                QueueStage4BooksPracticeJump(found->second[chapter - 1],
-                    g_practiceParam.bookFixedMask, x, y);
+                QueueStage4BooksPracticeJump(GetChapterTime(stage,chapter),   g_practiceParam.bookFixedMask, x, y);
             } else {
-                QueueStagePracticeJump(stage, found->second[chapter - 1]);
+                QueueStagePracticeJump(stage, GetChapterTime(stage, chapter));
             }
         }
     } else if (g_practiceParam.warpTarget >= 2 &&
         g_practiceParam.warpTarget <= 5 &&
         g_practiceParam.bossJump != TH06NC_JUMP_NONE) {
-        QueueBossPracticeJump(stage,
-            static_cast<JumpEnum>(g_practiceParam.bossJump),
-            g_practiceParam.dialogue != 0, g_practiceParam.fakeShot,
-            g_practiceParam.stage5Boss6Mode);
+        if (stage == 4 && g_practiceParam.bossJump == TH06NC_ST4_BOOKS) {
+            int x[6]{};
+            int y[6]{};
+            for (int book = 0; book < 6; ++book) {
+                x[book] = g_practiceParam.bookX[book];
+                y[book] = g_practiceParam.bookY[book];
+            }
+            QueueBossPracticeJump(stage,
+                static_cast<JumpEnum>(g_practiceParam.bossJump),
+                g_practiceParam.dialogue != 0, g_practiceParam.fakeShot,
+                g_practiceParam.stage5Boss6Mode, g_practiceParam.bookFixedMask, x, y);
+        }else {
+            QueueBossPracticeJump(stage,
+                static_cast<JumpEnum>(g_practiceParam.bossJump),
+                g_practiceParam.dialogue != 0, g_practiceParam.fakeShot,
+                g_practiceParam.stage5Boss6Mode);
+        }
     } else if (g_practiceParam.warpTarget == 6) {
         QueueStagePracticeJump(stage,
             std::max(g_practiceParam.timelineFrame, 0));
@@ -1362,7 +1374,7 @@ bool ImportPracticeReplayConfig(const PracticeReplayConfig& config)
     const auto chapterTimes = StageChapterTimes().find(config.stage + 1);
     if (config.warpTarget == 1 &&
         (chapterTimes == StageChapterTimes().end() ||
-            config.chapter > static_cast<int>(chapterTimes->second.size())))
+            config.chapter > static_cast<int>(chapterTimes->second.first.size() + chapterTimes->second.second.size())))
         return false;
 
     JumpEnum jump = static_cast<JumpEnum>(config.bossJump);
@@ -1567,17 +1579,24 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
         case 1: {
             const auto found = StageChapterTimes().find(selectedStage + 1);
             const int chapterMaximum = found == StageChapterTimes().end()
-                ? 1 : static_cast<int>(found->second.size());
+                ? 1 : static_cast<int>(found->second.first.size() + found->second.second.size());
             chapter = std::clamp(chapter, 1, std::max(chapterMaximum, 1));
             const int chapterRow = row++;
             const bool chapterFocused = beginRow(chapterRow);
             if (chapterFocused && horizontal != 0)
                 chapter = WrapSelection(chapter - 1, horizontal,
                     std::max(chapterMaximum, 1)) + 1;
-            ImGui::SliderInt(S(Chapter), &chapter, 1, std::max(chapterMaximum, 1));
+            static char chapter_desc[100] = "";
+            if (chapter <= found->second.first.size()){
+                sprintf_s(chapter_desc, "%s #%d ##chapter", S(Chapter_1), chapter);
+            }else
+            {
+                sprintf_s(chapter_desc, "%s #%d ##chapter", S(Chapter_2), chapter - found->second.first.size());
+            }
+            ImGui::SliderInt(S(Chapter), &chapter, 1, std::max(chapterMaximum, 1), chapter_desc);
             finishRow(chapterRow);
-            if (found != StageChapterTimes().end() && !found->second.empty())
-                ImGui::TextDisabled(S(TimelineTime), found->second[chapter - 1]);
+            if (found != StageChapterTimes().end() && ((!found->second.first.empty() || !found->second.first.empty())))
+                ImGui::TextDisabled(S(TimelineTime), GetChapterTime(selectedStage + 1,chapter));
             break;
         }
         case 2:
@@ -1599,18 +1618,6 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
                         return jump->jumpname == selectedBossJump;
                     }))
                 selectedBossJump = choices.front()->jumpname;
-
-            if (selectedStage == 3 && warpTarget >= 2 && warpTarget <= 5) {
-                const int fakeShotRow = row++;
-                const bool fakeShotFocused = beginRow(fakeShotRow);
-                if (fakeShotFocused && horizontal != 0)
-                    fakeShot = WrapSelection(fakeShot, horizontal,
-                        IM_ARRAYSIZE(fakeShotNames));
-                ImGui::SetNextItemWidth(280.0f);
-                ImGui::Combo(S(FakeShot), &fakeShot, fakeShotNames,
-                    IM_ARRAYSIZE(fakeShotNames));
-                finishRow(fakeShotRow);
-            }
 
             const int jumpRow = row++;
             const bool jumpFocused = beginRow(jumpRow);
@@ -1647,6 +1654,18 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
                 ImGui::EndCombo();
             }
             finishRow(jumpRow);
+
+            if (selectedStage == 3 && warpTarget >= 2 && warpTarget <= 5) {
+                const int fakeShotRow = row++;
+                const bool fakeShotFocused = beginRow(fakeShotRow);
+                if (fakeShotFocused && horizontal != 0)
+                    fakeShot = WrapSelection(fakeShot, horizontal,
+                        IM_ARRAYSIZE(fakeShotNames));
+                ImGui::SetNextItemWidth(280.0f);
+                ImGui::Combo(S(FakeShot), &fakeShot, fakeShotNames,
+                    IM_ARRAYSIZE(fakeShotNames));
+                finishRow(fakeShotRow);
+            }
 
             if (selectedBossJump == TH06NC_ST5_BOSS6) {
                 const int patternModeRow = row++;
@@ -1738,9 +1757,9 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
         ImGui::DragInt(S(Point), &pointItems, 1.0f, 0, 9999);
         finishRow(pointRow);
 
-
-        if (selectedStage == 3 && warpTarget == 1 && chapter == 4 &&
-            ImGui::TreeNode(S(Stage4Books))) {
+        if (selectedStage == 3 && 
+            ((warpTarget == 1 && chapter == 4) || (selectedBossJump == TH06NC_ST4_BOOKS))
+            && ImGui::TreeNode(S(Stage4Books))) {
                 bool bookFixed[6]{};
                 for (int book = 0; book < 6; ++book) {
                     bookFixed[book] = (bookFixedMask & (1u << book)) != 0;
