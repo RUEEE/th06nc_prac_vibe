@@ -51,7 +51,7 @@ collision behavior.
 
 ## Practice-only visibility
 
-The F10 hitbox checkbox is enabled only for an active Practice run. The capture
+The full-screen menu's hitbox checkbox is enabled only for an active Practice run. The capture
 hooks may remain installed, but drawing is gated. This keeps the diagnostic
 overlay out of ordinary gameplay while allowing native and enhanced Practice.
 

@@ -100,7 +100,7 @@ The implementations differ structurally:
 | Practice metadata | Protocol-4/5 named-field trailer embedded in the single `.rpy` | Separate `.rpy.thprac-nc` sidecar, replay protocol 7 |
 | Runtime assists in replay | Explicitly excluded; only Practice-UI values are restored | Stores initial flags and timestamped flag changes |
 | Compatibility | Enhanced replays require this tool; non-Enhanced modes remain byte-for-byte native | Native `.rpy` plus the fork's sidecar; older unpublished formats are rejected |
-| Runtime controls | F10, Backspace F1-F8, custom hitboxes/stretch, current project locale | Existing thprac quick/advanced menus, speed panel and upstream facilities |
+| Runtime controls | F9-F12, Backspace F1-F8, custom hitboxes/stretch, current project locale | Existing thprac quick/advanced menus, speed panel and upstream facilities |
 | Packaging | Separate launcher EXE and DLL | Single-file package that extracts verified native modules |
 
 The two metadata formats are intentionally not treated as interchangeable.

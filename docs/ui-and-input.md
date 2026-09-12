@@ -1,9 +1,9 @@
 # UI, localization, and input
 
-## F10 base UI
+## F9-F12 base UI
 
-`DrawPracticeBaseUi()` creates a display-sized ImGui window at `(0,0)`. F10
-toggles it independently of the replacement Practice window, so it may be
+`DrawPracticeBaseUi()` creates a display-sized ImGui window at `(0,0)`. Any key
+from F9 through F12 toggles it independently of the replacement Practice window, so it may be
 opened while practice configuration is visible. The window supports language
 selection, automatic shooting, practice-only hitbox display, game-only
 horizontal stretch, and FPS/timer-period adjustment.
@@ -11,6 +11,12 @@ horizontal stretch, and FPS/timer-period adjustment.
 ImGui font/style scale is computed in the renderer bootstrap from display
 height, using 2.5x at 1440 pixels as the reference. ImGui is submitted after
 the game stretch pass, so stretch mode does not distort UI geometry.
+
+F9-F12 are polled as one edge-triggered group in the Present hook before
+renderer visibility is evaluated, so they can request the first ImGui frame without depending on an already
+subclassed game window. Backspace/F1-F8 helper state is updated at the same
+point. `SC_KEYMENU` and keyboard-generated context-menu messages remain
+suppressed after window initialization to prevent Alt/system-menu focus loss.
 
 ## Replacement Practice UI
 
@@ -35,7 +41,7 @@ Up/down changes the focused row. Left/right changes its selection. The UI reads
 the game's current/previous logical action words and native repeat flag, so
 configured keyboard bindings and controllers work exactly like the stock menu.
 Mouse interaction remains available. UI values live in the single persistent,
-non-atomic `PracticeParam` and are not reset when F10 or the Practice screen is
+non-atomic `PracticeParam` and are not reset when the full-screen menu or the Practice screen is
 closed and reopened. The same X-macro field list generates the named replay
 map, so replay persistence and UI state cannot silently use different scalar
 field sets.
@@ -64,7 +70,7 @@ instead of assuming the normal fixed spell-card ordering.
 
 ### Keyboard remapping
 
-The F10 key-binding panel covers Up, Down, Left, Right, Focus, Shoot, Bomb, and
+The full-screen key-binding panel covers Up, Down, Left, Right, Focus, Shoot, Bomb, and
 the auto-shoot toggle. Each row shows the current key, a complete virtual-key
 Combo, and a capture button that waits for the next keyboard press. The two
 preset buttons set the seven native gameplay actions to arrow keys or WASD
@@ -75,6 +81,12 @@ saved immediately after changes in
 `%APPDATA%\\shanghaialice\\th06nc\\input.ini`. Missing or invalid key entries
 fall back independently to their built-in defaults.
 
+Direct key capture owns a global input-suppression state. While it is waiting,
+gameplay mapping, ImGui keyboard messages, F9-F12, Backspace/F1-F8, Retry,
+Exit, and automatic-shoot shortcuts do not react. Capture accepts only a new
+physical rising edge and releases the global suppression state immediately
+after that edge has been assigned.
+
 The SOCD Combo is applied independently to the vertical and horizontal
 keyboard axes before their logical direction bits are passed to the game.
 `None` preserves both opposing bits, `Last input wins` selects the most recent
@@ -84,12 +96,17 @@ therefore resolve to neutral in either priority mode. Replay playback bypasses
 the entire keyboard transform. The selected mode is persisted as `SOCD` in the
 same INI `[Options]` section.
 
-The same panel also binds the Enhanced-Practice Pause shortcuts for Retry,
-direct Exit, and Confirm (R/Q/Enter by default). Its key list is generated only
-from `keyBindDefine`. Left/right Shift normalize to `VK_SHIFT`, and left/right
-Ctrl normalize to `VK_CONTROL`, consistently for Combo selection, key capture,
-and INI loading. A saved VK absent from the map is replaced with that action's
-built-in arrow-layout default and the repaired configuration is written back.
+The same panel also binds Retry, direct Exit, and Confirm (R/Q/Enter by
+default). Retry and Exit are Enhanced-Practice Pause shortcuts. Confirm is
+inserted into the game's logical `0x100` menu-confirm bit, so it behaves like Z
+in native menus and in the enhanced Pause menu without also firing a shot.
+The key list is generated only from `keyBindDefine`. Left/right Shift normalize
+to `VK_SHIFT`, and left/right Ctrl normalize to `VK_CONTROL`, consistently for
+Combo selection, key capture, and INI loading. A saved VK absent from the map
+is replaced with that action's built-in arrow-layout default and the repaired
+configuration is written back. Retry and Exit detect rising edges from the
+physical high-bit key state; they do not use `GetAsyncKeyState`'s shared
+low-order event bit, which the game's own keyboard polling may consume first.
 
 RVA `+0x12BE0` first constructs a keyboard-only action word, then tail-calls
 RVA `+0x127D0` to merge controller input. The remapping detour is installed at
@@ -108,6 +125,7 @@ RVA `+0x12BE0` builds logical actions. Known bits include:
 | --- | --- |
 | `0x1` | Shoot/Z |
 | `0x2` | Bomb/X |
+| `0x100` | Menu confirm/Z |
 
 Auto-shoot adds bit `0x1` to the returned logical word. Because replay
 recording sees an ordinary shoot action, the resulting replay remains portable.

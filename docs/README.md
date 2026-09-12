@@ -16,7 +16,7 @@ for re-auditing a future executable revision.
   Boss jump catalog, writable ECL validation, and patch dispatch.
 - [practice-presentation.md](practice-presentation.md): Stage 6/Extra Boss
   backgrounds, title suppression, entry clear removal, and BGM selection.
-- [ui-and-input.md](ui-and-input.md): F10 UI, replacement Practice UI,
+- [ui-and-input.md](ui-and-input.md): F9-F12 UI, replacement Practice UI,
   localization, navigation, clipboard support, auto-shoot, and replay rules.
 - [auxiliary-options.md](auxiliary-options.md): Backspace overlay options and
   their instruction-level behavior.

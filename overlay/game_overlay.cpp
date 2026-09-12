@@ -454,27 +454,36 @@ bool InstallGameOverlayHook()
     return enemyInstalled;
 }
 
-void UpdateAndDrawGameOverlayUi()
+void UpdateGameOverlayState()
 {
     const bool foreground = IsGameProcessForeground();
-    if (foreground && (GetAsyncKeyState(VK_BACK) & 1))
+    const bool hotkeysEnabled = foreground && !IsKeyBindingCaptureActive();
+    if (!hotkeysEnabled) {
+        // Drain the shared low-order edge bits while capture owns the
+        // keyboard, otherwise a captured F-key/Backspace could trigger here
+        // immediately after capture ends.
+        GetAsyncKeyState(VK_BACK);
+        for (int key = VK_F1; key <= VK_F8; ++key)
+            GetAsyncKeyState(key);
+    }
+    if (hotkeysEnabled && (GetAsyncKeyState(VK_BACK) & 1))
         g_windowVisible = !g_windowVisible;
 
     ToggleRequested(g_invincible,
-        foreground && (GetAsyncKeyState(VK_F1) & 1), ApplyInvincible);
-    if (foreground && (GetAsyncKeyState(VK_F2) & 1))
+        hotkeysEnabled && (GetAsyncKeyState(VK_F1) & 1), ApplyInvincible);
+    if (hotkeysEnabled && (GetAsyncKeyState(VK_F2) & 1))
         g_lockLives = !g_lockLives;
     ToggleRequested(g_lockBombs,
-        foreground && (GetAsyncKeyState(VK_F3) & 1), ApplyBombs);
+        hotkeysEnabled && (GetAsyncKeyState(VK_F3) & 1), ApplyBombs);
     ToggleRequested(g_lockPower,
-        foreground && (GetAsyncKeyState(VK_F4) & 1), ApplyPower);
-    if (foreground && (GetAsyncKeyState(VK_F5) & 1))
+        hotkeysEnabled && (GetAsyncKeyState(VK_F4) & 1), ApplyPower);
+    if (hotkeysEnabled && (GetAsyncKeyState(VK_F5) & 1))
         g_lockTime = !g_lockTime;
-    if (foreground && (GetAsyncKeyState(VK_F6) & 1))
+    if (hotkeysEnabled && (GetAsyncKeyState(VK_F6) & 1))
         g_autoBomb = !g_autoBomb;
-    if (foreground && (GetAsyncKeyState(VK_F7) & 1))
+    if (hotkeysEnabled && (GetAsyncKeyState(VK_F7) & 1))
         g_everlastingBgm = !g_everlastingBgm;
-    if (foreground && (GetAsyncKeyState(VK_F8) & 1))
+    if (hotkeysEnabled && (GetAsyncKeyState(VK_F8) & 1))
         g_noBomb = !g_noBomb;
 
     // Match thprac's "lock lives / no continue" mode: retain the stock death
@@ -484,7 +493,10 @@ void UpdateAndDrawGameOverlayUi()
     const bool livesPatchWanted = g_lockLives && lives && *lives == 0;
     if (!ApplyLives(livesPatchWanted))
         g_patchError = true;
+}
 
+void UpdateAndDrawGameOverlayUi()
+{
     DrawAutoShootIndicator();
 
     if (!g_windowVisible)

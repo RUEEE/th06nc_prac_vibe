@@ -21,7 +21,7 @@ void DrawPracticeBaseUi(const char* rendererName)
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(1.0f);
+    ImGui::SetNextWindowBgAlpha(0.8f);
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
         ImGuiWindowFlags_NoSavedSettings;
@@ -35,7 +35,7 @@ void DrawPracticeBaseUi(const char* rendererName)
             IM_ARRAYSIZE(languageNames)))
         Locale::Instance().SetLanguage(static_cast<Language>(language));
 
-    if (IsGameProcessForeground() &&
+    if (!IsKeyBindingCaptureActive() && IsGameProcessForeground() &&
         (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 &&
         (GetAsyncKeyState('D') & 1) != 0)
         SetAutoShootEnabled(true);
@@ -111,7 +111,7 @@ void DrawPracticeBaseUi(const char* rendererName)
     ImGui::Text(S(Renderer), rendererName);
     ImGui::Text(S(ProcessId), GetCurrentProcessId());
     ImGui::Text(S(ReplayHook), ReplaySupportHookStatus());
-    ImGui::TextDisabled("%s", S(F10Hint));
+    ImGui::TextDisabled("%s", S(MenuHotkeyHint));
     ImGui::Separator();
 
     if (ImGui::CollapsingHeader(S(Licenses))) {
@@ -119,9 +119,10 @@ void DrawPracticeBaseUi(const char* rendererName)
         ImGui::Separator();
         ImGui::TextWrapped("Dear ImGui - MIT License - Copyright (c) 2014-2021 Omar Cornut");
         ImGui::TextWrapped("stb libraries bundled by Dear ImGui - MIT License or Public Domain - Copyright (c) 2017 Sean Barrett");
+        ImGui::TextWrapped("MinHook - 2-clause BSD License - Copyright (c) 2009-2017 Tsuda Kageyu");
         ImGui::Separator();
         ImGui::TextWrapped("This project references thprac, released under the MIT License - Copyright (c) 2022 Ack and its contributors.");
-        ImGui::TextDisabled("See LICENSE, THIRD_PARTY_NOTICES.md, and third_party/imgui/LICENSE.txt.");
+        ImGui::TextDisabled("See LICENSE, THIRD_PARTY_NOTICES.md, and third_party license files.");
     }
     ImGui::End();
 

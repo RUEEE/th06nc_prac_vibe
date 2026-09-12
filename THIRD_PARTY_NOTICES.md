@@ -39,9 +39,20 @@ Copyright (c) 2017 Sean Barrett
 The applicable license text is retained at the end of each bundled `imstb_*.h`
 header.
 
+## MinHook
+
+MinHook source code is bundled under `third_party/minhook` and is distributed
+under the 2-clause BSD License:
+
+```text
+Copyright (C) 2009-2017 Tsuda Kageyu.
+```
+
+The complete bundled license is available at
+[third_party/minhook/LICENSE.txt](third_party/minhook/LICENSE.txt).
+
 ## Platform components
 
-Direct3D, DXGI, D3DCompiler, Win32, and the Microsoft C/C++ toolchain are used
+Direct3D, DXGI, Win32, and the Microsoft C/C++ toolchain are used
 through the Windows SDK and system runtime. They are not redistributed as
 source code by this repository.
-

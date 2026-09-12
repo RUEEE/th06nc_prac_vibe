@@ -1515,10 +1515,12 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
         return selected;
     };
     auto finishRow = [&](int rowIndex) {
-        if (ImGui::IsItemHovered())
-            interaction.hovered = true;
-        if (ImGui::IsItemClicked())
+       //if (ImGui::IsItemHovered()) 
+       if (ImGui::IsItemClicked())
+       {
+                interaction.hovered = true;
             navigationRow = rowIndex;
+       }
         if (movedVertically && navigationRow == rowIndex)
             ImGui::SetScrollHereY(0.5f);
     };

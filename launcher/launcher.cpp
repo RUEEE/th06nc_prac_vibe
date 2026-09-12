@@ -4,12 +4,17 @@
 
 #include "../version.h"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -17,6 +22,27 @@ namespace {
 constexpr wchar_t kGameExeName[] = L"th06nc.exe";
 constexpr wchar_t kOverlayDllName[] = L"th06nc_test.dll";
 constexpr wchar_t kSteamUrl[] = L"steam://rungameid/4659620";
+
+struct TargetSignature {
+    const wchar_t* name;
+    uintptr_t rva;
+    std::array<unsigned char, 15> bytes;
+    size_t size;
+};
+
+// These are also checked by the corresponding overlay hooks. Checking a few
+// independent locations here prevents an unrelated x64 executable renamed to
+// th06nc.exe from receiving the DLL in the first place.
+constexpr TargetSignature kTargetSignatures[] = {
+    {L"action-input update", 0x12BE0,
+        {0x48, 0x89, 0x74, 0x24, 0x20}, 5},
+    {L"player initialization", 0x3A9C0,
+        {0x48, 0x89, 0x5C, 0x24, 0x10,
+         0x48, 0x89, 0x6C, 0x24, 0x18,
+         0x48, 0x89, 0x74, 0x24, 0x20}, 15},
+    {L"keyboard update", 0xAE180,
+        {0x48, 0x89, 0x5C, 0x24, 0x10}, 5},
+};
 
 std::wstring Win32Error(DWORD error = GetLastError())
 {
@@ -30,7 +56,37 @@ std::wstring Win32Error(DWORD error = GetLastError())
         LocalFree(text);
     while (!result.empty() && (result.back() == L'\r' || result.back() == L'\n'))
         result.pop_back();
+    result += L" (Win32 error " + std::to_wstring(error) + L")";
     return result;
+}
+
+std::wstring HexAddress(uintptr_t value)
+{
+    std::wostringstream stream;
+    stream << L"0x" << std::hex << std::uppercase << value;
+    return stream.str();
+}
+
+bool QueryProcessImagePath(HANDLE process, std::wstring& imagePath)
+{
+    std::wstring buffer(32768, L'\0');
+    DWORD length = static_cast<DWORD>(buffer.size());
+    if (!QueryFullProcessImageNameW(process, 0, buffer.data(), &length))
+        return false;
+    buffer.resize(length);
+    imagePath = std::move(buffer);
+    return true;
+}
+
+std::wstring QueryProcessImagePath(DWORD pid)
+{
+    const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!process)
+        return {};
+    std::wstring imagePath;
+    QueryProcessImagePath(process, imagePath);
+    CloseHandle(process);
+    return imagePath;
 }
 
 std::filesystem::path ModuleDirectory()
@@ -59,50 +115,126 @@ bool IsTarget64Bit(HANDLE process)
     return IsWow64Process(process, &wow64) && !wow64 && sizeof(void*) == 8;
 }
 
-std::optional<uintptr_t> RemoteModuleBase(DWORD pid, const wchar_t* moduleName)
+std::optional<uintptr_t> RemoteModuleBase(DWORD pid, const wchar_t* moduleName,
+    int maximumAttempts = 1, DWORD* failureError = nullptr, HANDLE process = nullptr)
 {
-    HANDLE snapshot = INVALID_HANDLE_VALUE;
-    for (int attempt = 0; attempt < 5; ++attempt) {
-        snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
-        if (snapshot != INVALID_HANDLE_VALUE || GetLastError() != ERROR_BAD_LENGTH)
-            break;
-        Sleep(10);
-    }
-    if (snapshot == INVALID_HANDLE_VALUE)
-        return std::nullopt;
-
-    MODULEENTRY32W module{};
-    module.dwSize = sizeof(module);
-    std::optional<uintptr_t> result;
-    if (Module32FirstW(snapshot, &module)) {
-        do {
-            if (_wcsicmp(module.szModule, moduleName) == 0) {
-                result = reinterpret_cast<uintptr_t>(module.modBaseAddr);
+    DWORD lastError = ERROR_MOD_NOT_FOUND;
+    for (int attempt = 0; attempt < maximumAttempts; ++attempt) {
+        if (process) {
+            DWORD exitCode = STILL_ACTIVE;
+            if (GetExitCodeProcess(process, &exitCode) && exitCode != STILL_ACTIVE) {
+                lastError = ERROR_PROCESS_ABORTED;
                 break;
             }
-        } while (Module32NextW(snapshot, &module));
+        }
+
+        const HANDLE snapshot = CreateToolhelp32Snapshot(
+            TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid);
+        if (snapshot == INVALID_HANDLE_VALUE) {
+            lastError = GetLastError();
+        } else {
+            MODULEENTRY32W module{};
+            module.dwSize = sizeof(module);
+            if (Module32FirstW(snapshot, &module)) {
+                do {
+                    if (_wcsicmp(module.szModule, moduleName) == 0) {
+                        const uintptr_t result =
+                            reinterpret_cast<uintptr_t>(module.modBaseAddr);
+                        CloseHandle(snapshot);
+                        if (failureError)
+                            *failureError = ERROR_SUCCESS;
+                        return result;
+                    }
+                } while (Module32NextW(snapshot, &module));
+                lastError = ERROR_MOD_NOT_FOUND;
+            } else {
+                lastError = GetLastError();
+            }
+            CloseHandle(snapshot);
+        }
+
+        if (attempt + 1 < maximumAttempts)
+            Sleep(25);
     }
-    CloseHandle(snapshot);
-    return result;
+
+    if (failureError)
+        *failureError = lastError;
+    return std::nullopt;
 }
 
 bool IsAlreadyInjected(DWORD pid)
 {
-    return RemoteModuleBase(pid, kOverlayDllName).has_value();
+    return RemoteModuleBase(pid, kOverlayDllName, 3).has_value();
 }
 
-bool InjectDll(DWORD pid, const std::filesystem::path& dllPath, std::wstring& error)
+bool ValidateTargetExecutable(HANDLE process, DWORD pid, std::wstring& imagePath,
+    std::wstring& error)
 {
+    if (!QueryProcessImagePath(process, imagePath)) {
+        error = L"QueryFullProcessImageNameW: " + Win32Error();
+        return false;
+    }
+
+    if (_wcsicmp(std::filesystem::path(imagePath).filename().c_str(), kGameExeName) != 0) {
+        error = L"target image name is not " + std::wstring(kGameExeName);
+        return false;
+    }
+    if (!IsTarget64Bit(process)) {
+        error = L"target process is not the supported 64-bit game";
+        return false;
+    }
+
+    DWORD moduleError = ERROR_SUCCESS;
+    const auto moduleBase = RemoteModuleBase(
+        pid, kGameExeName, 40, &moduleError, process);
+    if (!moduleBase) {
+        DWORD exitCode = STILL_ACTIVE;
+        if (GetExitCodeProcess(process, &exitCode) && exitCode != STILL_ACTIVE) {
+            error = L"target process exited while waiting for its main module "
+                L"(exit code " + std::to_wstring(exitCode) + L")";
+        } else {
+            error = L"main module " + std::wstring(kGameExeName) +
+                L" did not become enumerable within 1 second: " +
+                Win32Error(moduleError);
+        }
+        return false;
+    }
+
+    for (const TargetSignature& signature : kTargetSignatures) {
+        std::array<unsigned char, 15> actual{};
+        SIZE_T bytesRead = 0;
+        const void* address = reinterpret_cast<const void*>(*moduleBase + signature.rva);
+        if (!ReadProcessMemory(process, address, actual.data(), signature.size, &bytesRead) ||
+            bytesRead != signature.size) {
+            error = L"ReadProcessMemory failed while checking " +
+                std::wstring(signature.name) + L" at RVA " + HexAddress(signature.rva) +
+                L": " + Win32Error();
+            return false;
+        }
+        if (!std::equal(actual.begin(), actual.begin() + signature.size,
+                signature.bytes.begin())) {
+            error = L"unsupported or incorrect th06nc.exe: " +
+                std::wstring(signature.name) + L" signature does not match at RVA " +
+                HexAddress(signature.rva);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool InjectDll(DWORD pid, const std::filesystem::path& dllPath, std::wstring& targetPath,
+    std::wstring& error)
+{
+    targetPath = QueryProcessImagePath(pid);
     const DWORD access = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION |
-        PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ;
+        PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ | SYNCHRONIZE;
     const HANDLE process = OpenProcess(access, FALSE, pid);
     if (!process) {
         error = L"OpenProcess: " + Win32Error();
         return false;
     }
 
-    if (!IsTarget64Bit(process)) {
-        error = L"target process is not 64-bit";
+    if (!ValidateTargetExecutable(process, pid, targetPath, error)) {
         CloseHandle(process);
         return false;
     }
@@ -145,9 +277,12 @@ bool InjectDll(DWORD pid, const std::filesystem::path& dllPath, std::wstring& er
         return false;
     }
     const std::wstring ownerName = std::filesystem::path(ownerPath).filename().wstring();
-    const auto remoteOwner = RemoteModuleBase(pid, ownerName.c_str());
+    DWORD ownerError = ERROR_SUCCESS;
+    const auto remoteOwner = RemoteModuleBase(
+        pid, ownerName.c_str(), 20, &ownerError, process);
     if (!remoteOwner) {
-        error = L"could not find " + ownerName + L" in the target process";
+        error = L"could not find " + ownerName +
+            L" in the target process: " + Win32Error(ownerError);
         VirtualFreeEx(process, remoteText, 0, MEM_RELEASE);
         CloseHandle(process);
         return false;
@@ -181,6 +316,33 @@ bool InjectDll(DWORD pid, const std::filesystem::path& dllPath, std::wstring& er
     return true;
 }
 
+struct InjectionFailure {
+    DWORD pid = 0;
+    std::wstring targetPath;
+    std::wstring reason;
+
+    explicit operator bool() const noexcept { return pid != 0; }
+};
+
+void PrintInjectionFailure(DWORD pid, const std::wstring& targetPath,
+    const std::filesystem::path& dllPath, const std::wstring& error)
+{
+    const std::wstring fingerprint = targetPath + L"\n" + error;
+    static std::map<DWORD, std::wstring> reportedFailures;
+    if (const auto found = reportedFailures.find(pid);
+        found != reportedFailures.end() && found->second == fingerprint)
+        return;
+    reportedFailures[pid] = fingerprint;
+
+    std::wcerr <<
+        L"Injection attempt failed.\n"
+        L"  Target PID:        " << pid << L"\n"
+        L"  Target executable: " << (targetPath.empty() ? L"<unavailable>" : targetPath) << L"\n"
+        L"  Expected filename: " << kGameExeName << L"\n"
+        L"  Injection DLL:     " << std::filesystem::absolute(dllPath).wstring() << L"\n"
+        L"  Reason:            " << error << L"\n";
+}
+
 std::vector<DWORD> FindGameProcesses()
 {
     std::vector<DWORD> result;
@@ -200,23 +362,42 @@ std::vector<DWORD> FindGameProcesses()
     return result;
 }
 
-bool TryAttach(const std::filesystem::path& dllPath, DWORD onlyPid = 0)
+bool TryAttach(const std::filesystem::path& dllPath, DWORD onlyPid = 0,
+    bool reportFailures = true, InjectionFailure* lastFailure = nullptr)
 {
-    for (const DWORD pid : FindGameProcesses()) {
-        if (onlyPid && pid != onlyPid)
-            continue;
+    const std::vector<DWORD> candidates = onlyPid ?
+        std::vector<DWORD>{onlyPid} : FindGameProcesses();
+    std::vector<InjectionFailure> failures;
+    for (const DWORD pid : candidates) {
         if (IsAlreadyInjected(pid)) {
-            std::wcout << L"th06nc_test is already loaded in PID " << pid << L".\n";
+            const std::wstring targetPath = QueryProcessImagePath(pid);
+            std::wcout << L"th06nc_test is already loaded.\n"
+                L"  Target PID:        " << pid << L"\n"
+                L"  Target executable: " <<
+                (targetPath.empty() ? L"<unavailable>" : targetPath) << L"\n"
+                L"  Injection DLL:     " << std::filesystem::absolute(dllPath).wstring() << L"\n";
             return true;
         }
 
+        std::wstring targetPath;
         std::wstring error;
-        if (InjectDll(pid, dllPath, error)) {
-            std::wcout << L"Injected th06nc_test.dll into th06nc.exe (PID " << pid << L").\n";
-            std::wcout << L"Press F1 in the game to show or hide the practice window.\n";
+        if (InjectDll(pid, dllPath, targetPath, error)) {
+            std::wcout << L"Injection succeeded.\n"
+                L"  Target PID:        " << pid << L"\n"
+                L"  Target executable: " << targetPath << L"\n"
+                L"  Injection DLL:     " << std::filesystem::absolute(dllPath).wstring() << L"\n";
+            std::wcout << L"Press F9-F12 in the game to show or hide the practice window.\n";
             return true;
         }
-        std::wcerr << L"Injection attempt for PID " << pid << L" failed: " << error << L"\n";
+        failures.push_back({pid, std::move(targetPath), std::move(error)});
+    }
+
+    if (!failures.empty() && lastFailure)
+        *lastFailure = failures.back();
+    if (reportFailures) {
+        for (const InjectionFailure& failure : failures)
+            PrintInjectionFailure(
+                failure.pid, failure.targetPath, dllPath, failure.reason);
     }
     return false;
 }
@@ -235,20 +416,34 @@ bool LaunchDirect(const std::filesystem::path& exePath, const std::filesystem::p
         return false;
     }
 
+    std::wstring targetPath;
     std::wstring error;
-    const bool injected = InjectDll(process.dwProcessId, dllPath, error);
+    const bool injected = InjectDll(process.dwProcessId, dllPath, targetPath, error);
     if (injected) {
         ResumeThread(process.hThread);
         std::wcout << L"Started and injected th06nc.exe (PID " << process.dwProcessId << L").\n";
-        std::wcout << L"Press F1 in the game to show or hide the practice window.\n";
+        std::wcout << L"Press F9-F12 in the game to show or hide the practice window.\n";
     } else {
-        std::wcerr << L"Injection failed: " << error << L"\n";
+        PrintInjectionFailure(process.dwProcessId, targetPath, dllPath, error);
         TerminateProcess(process.hProcess, ERROR_DLL_INIT_FAILED);
     }
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     return injected;
 }
+
+struct PauseConsoleOnExit {
+    ~PauseConsoleOnExit()
+    {
+        const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+        DWORD mode = 0;
+        if (input == INVALID_HANDLE_VALUE || !GetConsoleMode(input, &mode))
+            return;
+        std::wcout << L"\nPress Enter to close this window..." << std::flush;
+        std::wstring ignored;
+        std::getline(std::wcin, ignored);
+    }
+};
 
 void PrintUsage()
 {
@@ -264,6 +459,7 @@ void PrintUsage()
 
 int wmain(int argc, wchar_t** argv)
 {
+    PauseConsoleOnExit pauseConsole;
     SetConsoleOutputCP(CP_UTF8);
     std::wcout << L"th06nc_prac_vibe version "
                << Th06ncPracVersion::WideText << L"\n";
@@ -297,34 +493,43 @@ int wmain(int argc, wchar_t** argv)
     }
 
     const std::filesystem::path localGamePath = ModuleDirectory() / kGameExeName;
+    bool launchedLocally = false;
     if (std::filesystem::is_regular_file(localGamePath)) {
         // std::wcout << L"Found local th06nc.exe next to the launcher; starting it directly.\n";
         // return LaunchDirect(localGamePath, dllPath) ? 0 : 1;
         const HINSTANCE shellResult = ShellExecuteW(nullptr, L"open", localGamePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<INT_PTR>(shellResult) <= 32) {
-            std::wcerr << L"Could not open " << kSteamUrl << L" (ShellExecute error "
-                << reinterpret_cast<INT_PTR>(shellResult) << L").\n";
+            std::wcerr << L"Could not open the local game executable.\n"
+                L"  Target executable: " << std::filesystem::absolute(localGamePath).wstring() << L"\n"
+                L"  ShellExecute code: " << reinterpret_cast<INT_PTR>(shellResult) << L"\n";
             return 1;
         }
-    }else{
+        launchedLocally = true;
+    } else {
         const HINSTANCE shellResult = ShellExecuteW(nullptr, L"open", kSteamUrl,
             nullptr, nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<INT_PTR>(shellResult) <= 32) {
-            std::wcerr << L"Could not open " << kSteamUrl << L" (ShellExecute error "
-                << reinterpret_cast<INT_PTR>(shellResult) << L").\n";
+            std::wcerr << L"Could not request the Steam game launch.\n"
+                L"  Steam URL:         " << kSteamUrl << L"\n"
+                L"  ShellExecute code: " << reinterpret_cast<INT_PTR>(shellResult) << L"\n";
             return 1;
         }
     }
 
-    
-    std::wcout << L"Steam launch requested; waiting for th06nc.exe...\n";
+    std::wcout << (launchedLocally ?
+        L"Local game launch requested; waiting for th06nc.exe...\n" :
+        L"Steam game launch requested; waiting for th06nc.exe...\n");
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(45);
+    InjectionFailure waitFailure;
     while (std::chrono::steady_clock::now() < deadline) {
-        if (TryAttach(dllPath))
+        if (TryAttach(dllPath, 0, false, &waitFailure))
             return 0;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
 
+    if (waitFailure)
+        PrintInjectionFailure(
+            waitFailure.pid, waitFailure.targetPath, dllPath, waitFailure.reason);
     std::wcerr << L"Timed out waiting for th06nc.exe. Is Steam running and the game installed?\n";
     return 1;
 }

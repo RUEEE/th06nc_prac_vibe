@@ -768,8 +768,8 @@ void DrawPracticePauseUi()
                 ImVec2(width, buttonHeight));
             if (ImGui::IsItemHovered()) {
                 actionHovered = true;
-                selected = index;
-                settingsFocused = false;
+                // selected = index;
+                // settingsFocused = false;
             }
             if (keyboardHighlighted)
                 ImGui::PopStyleColor();
@@ -783,8 +783,11 @@ void DrawPracticePauseUi()
         drawAction(2, S(SaveReplayAndExit), PauseAction::SaveAndExit);
         drawAction(3, S(ExitWithoutReplay), PauseAction::ExitWithoutReplay);
 
-        const bool confirmed =
-            g_pauseConfirm.exchange(false) || IsConfirmKeyPressed();
+        // Confirm comes from MenuInputCurrent just like native Z/controller
+        // confirmation. The configurable Confirm key injects that same bit in
+        // the central keyboard mapping hook, so no separate physical poll is
+        // needed here (and polling twice could turn one press into two actions).
+        const bool confirmed = g_pauseConfirm.exchange(false);
         if (!settingsFocused && confirmed && selected < 4) {
             constexpr PauseAction actions[] = {
                 PauseAction::Resume, PauseAction::Restart,
@@ -792,12 +795,10 @@ void DrawPracticePauseUi()
             g_pauseAction.store(actions[selected]);
         }
         if (settingsFocused && confirmed) {
-            settingsFocused = false;
-            selected = 3;
+            g_pauseAction.store(PauseAction::Restart);
         }
 
         ImGui::Separator();
-        ImGui::TextUnformatted(S(PracticeSetup));
         if (enteredSettings)
             ImGui::SetScrollHereY(0.0f);
         const PausedPracticeUiResult editorInteraction =
@@ -824,7 +825,6 @@ void DrawPracticePauseUi()
         }
     }
     ImGui::End();
-
 }
 
 bool IsPracticePauseUiVisible()

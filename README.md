@@ -4,12 +4,39 @@
 
 # th06nc_prac_vibe
 
-**版本 / Version:** 0.3.0
+**版本 / Version:** 0.3.1
 **作者 / Author:** RUEEE (GPT used)
 
 [中文](#中文说明) | [English](#english)
 
 ## 更新日志 / Changelog
+
+### 0.3.1 — 2026-09-12（9.12）
+
+- 修复 Windows 7 下 DLL 注入后 ImGui 不显示的问题：改用 MinHook 挂接
+  D3D11 `Present`，延迟初始化渲染器，并兼容 Win7 字体文件布局。
+- 使用预编译 Shader Model 4 字节码，移除运行时 D3DCompiler 依赖；加入可由
+  `%APPDATA%\shanghaialice\th06nc\input.ini` 中 `debug=1` 开启的分阶段诊断。
+- 加强 Launcher 的目标进程、主模块、文件路径、架构和代码签名检查，并完善
+  注入失败信息。
+- 修复 Backspace 与全屏菜单无法触发首次 ImGui 初始化的问题；F9–F12 现在
+  均可切换全屏菜单，并阻止 Win7 的 F10 标题栏菜单。
+- 修正确认键映射：自定义确认键会写入与 Z 相同的原生菜单确认位，但不射击。
+- 按键捕获期间使用全局普通状态屏蔽其他键盘操作，并仅接受物理按键上升沿。
+
+- Fixed missing ImGui rendering after DLL injection on Windows 7 by detouring
+  D3D11 `Present` with MinHook, initializing lazily, and supporting Win7 font
+  filenames.
+- Replaced runtime shader compilation with embedded Shader Model 4 bytecode
+  and added opt-in staged diagnostics through `debug=1` in the input INI.
+- Strengthened launcher validation of the target process, main module, image
+  path, architecture, and code signatures, with more useful injection errors.
+- Fixed first-use activation of the Backspace and full-screen menus. F9–F12
+  now toggle the panel, including suppression of Win7's F10 caption menu.
+- Fixed configurable Confirm so it supplies Z's native menu-confirm bit without
+  supplying Shoot.
+- Key capture now globally suppresses other keyboard actions while listening
+  and accepts only a physical rising edge, using ordinary single-thread state.
 
 ### 0.3.0 — 2026-09-12（9.12）
 
@@ -77,14 +104,15 @@ ECL 修改前会验证关卡、文件大小和内容指纹，避免把某一面�
 - Stage 6 与 Extra 的关底 Boss 使用原生符卡练习的背景预推进和特殊
   `eff06`/`eff07` 设置，不再错误使用道中 Boss 背景。
 
-#### F10 全屏菜单
+#### F9–F12 全屏菜单
 
-- F10 打开/关闭覆盖整个窗口的设置界面，并可与 Practice 设置界面同时打开。
+- F9、F10、F11、F12 均可打开/关闭覆盖整个窗口的设置界面，并可与 Practice 设置界面同时打开。
 - 界面按窗口高度自动缩放，以 1440 高度对应 2.5x 为基准。
 - 中文、英文、日文切换；默认语言根据系统代码页选择。
 - 显示统一版本号和默认折叠的许可证/第三方声明。
 - 自动射击：V 切换，按下当前绑定的射击/Bomb 键或 V 取消；`Shift+D` 可开启功能。
-- 可在 F10 中分别重绑上、下、左、右、低速、射击和 Bomb；支持下拉列表与“选择按键”直接捕获。
+- 可在全屏菜单中分别重绑上、下、左、右、低速、射击和 Bomb；支持下拉列表与“选择按键”直接捕获。
+- 重试、直接退出和菜单确认键也可修改（默认 R、Q、Enter）；确认键写入与 Z 相同的原生菜单确认位，但不会触发射击。
 - 自动射击时左上角显示 `A`，其逻辑输入可正常写入 Replay。
 - 仅练习模式可开启判定显示，包含弹幕、矩形判定、自机判定和旋转激光判定。
 - 可调整游戏 FPS/速度。
@@ -231,23 +259,25 @@ Nonspell, Spell, and Frame.
 - Stage 6 and Extra main Bosses reuse native spell-practice presentation
   pre-advance and special `eff06`/`eff07` setup for the correct background.
 
-#### F10 full-screen menu
+#### F9–F12 full-screen menu
 
-- F10 toggles a full-window panel that may coexist with the Practice setup UI.
+- F9, F10, F11, and F12 all toggle the full-window panel, which may coexist
+  with the Practice setup UI.
 - UI scaling follows window height, using 2.5x at 1440 pixels as the reference.
 - Chinese, English, and Japanese localization with system-code-page default.
 - Shared version display and a collapsed licenses/third-party section.
 - Auto-shoot has a configurable toggle key (V by default), with `Shift+D`
   enable shortcut and top-left `A` indicator. Generated shooting remains
   replay-compatible.
-- F10 can independently rebind Up, Down, Left, Right, Focus, Shoot, Bomb, and
+- The full-screen menu can independently rebind Up, Down, Left, Right, Focus, Shoot, Bomb, and
   the auto-shoot toggle through a full keyboard list or direct "press a key"
   capture. Arrow-key and WASD buttons restore the corresponding seven-key
   gameplay presets without changing the auto-shoot toggle. Bindings and the
   auto-shoot enabled state persist in
   `%APPDATA%\\shanghaialice\\th06nc\\input.ini`.
-- Retry, direct-exit, and overlay-confirm shortcuts are also configurable
-  (defaults: R, Q, and Enter). Only keys named by the built-in VK-name map are
+- Retry, direct-exit, and menu-confirm controls are also configurable
+  (defaults: R, Q, and Enter). Confirm injects the same native logical menu bit
+  as Z, without adding Shoot. Only keys named by the built-in VK-name map are
   accepted; unsupported saved values fall back to the corresponding arrow-set
   defaults. Left/right Shift and Ctrl are normalized to their generic keys.
 - Direction bindings support configurable SOCD handling: native/no filtering,

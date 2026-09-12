@@ -54,14 +54,14 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;WINVER=0x0601;_WIN32_WINNT=0x0601;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\imgui;$(ProjectDir)..\third_party\minhook\include;$(ProjectDir)..\third_party\minhook\src;$(ProjectDir)..\third_party\minhook\src\hde;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d9.lib;d3d11.lib;d3dcompiler.lib;dxgi.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d9.lib;d3d11.lib;dxgi.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -74,8 +74,8 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
-      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\imgui;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;WINVER=0x0601;_WIN32_WINNT=0x0601;WIN32_LEAN_AND_MEAN;NOMINMAX;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\third_party\imgui;$(ProjectDir)..\third_party\minhook\include;$(ProjectDir)..\third_party\minhook\src;$(ProjectDir)..\third_party\minhook\src\hde;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -83,7 +83,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d9.lib;d3d11.lib;d3dcompiler.lib;dxgi.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d9.lib;d3d11.lib;dxgi.lib;user32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -106,9 +106,22 @@
     <ClCompile Include="..\third_party\imgui\imgui_impl_dx9.cpp" />
     <ClCompile Include="..\third_party\imgui\imgui_impl_dx11.cpp" />
     <ClCompile Include="..\third_party\imgui\imgui_impl_win32.cpp" />
+    <ClCompile Include="..\third_party\minhook\src\buffer.c">
+      <DisableSpecificWarnings>4201;4244;4310;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="..\third_party\minhook\src\hook.c">
+      <DisableSpecificWarnings>4201;4244;4310;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="..\third_party\minhook\src\trampoline.c">
+      <DisableSpecificWarnings>4201;4244;4310;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="..\third_party\minhook\src\hde\hde64.c">
+      <DisableSpecificWarnings>4201;4244;4310;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\version.h" />
+    <ClInclude Include="d3d11_shaders.h" />
     <ClInclude Include="game_addresses.h" />
     <ClInclude Include="game_overlay.h" />
     <ClInclude Include="hitbox_capture.h" />
@@ -123,9 +136,18 @@
     <ClInclude Include="..\third_party\imgui\imgui_impl_dx9.h" />
     <ClInclude Include="..\third_party\imgui\imgui_impl_dx11.h" />
     <ClInclude Include="..\third_party\imgui\imgui_impl_win32.h" />
+    <ClInclude Include="..\third_party\minhook\include\MinHook.h" />
+    <ClInclude Include="..\third_party\minhook\src\buffer.h" />
+    <ClInclude Include="..\third_party\minhook\src\trampoline.h" />
+    <ClInclude Include="..\third_party\minhook\src\hde\hde64.h" />
+    <ClInclude Include="..\third_party\minhook\src\hde\pstdint.h" />
+    <ClInclude Include="..\third_party\minhook\src\hde\table64.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="..\README.md" />
+    <None Include="shaders\imgui_dx11.hlsl" />
+    <None Include="shaders\stretch.hlsl" />
+    <None Include="..\third_party\minhook\LICENSE.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

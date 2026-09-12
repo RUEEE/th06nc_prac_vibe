@@ -36,6 +36,18 @@
     <ClCompile Include="..\third_party\imgui\imgui_widgets.cpp">
       <Filter>imgui</Filter>
     </ClCompile>
+    <ClCompile Include="..\third_party\minhook\src\buffer.c">
+      <Filter>minhook</Filter>
+    </ClCompile>
+    <ClCompile Include="..\third_party\minhook\src\trampoline.c">
+      <Filter>minhook</Filter>
+    </ClCompile>
+    <ClCompile Include="..\third_party\minhook\src\hde\hde64.c">
+      <Filter>minhook</Filter>
+    </ClCompile>
+    <ClCompile Include="..\third_party\minhook\src\hook.c">
+      <Filter>minhook</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\version.h" />
@@ -61,13 +73,49 @@
     <ClInclude Include="..\third_party\imgui\imgui_impl_win32.h">
       <Filter>imgui</Filter>
     </ClInclude>
+    <ClInclude Include="..\third_party\minhook\src\buffer.h">
+      <Filter>minhook</Filter>
+    </ClInclude>
+    <ClInclude Include="..\third_party\minhook\src\trampoline.h">
+      <Filter>minhook</Filter>
+    </ClInclude>
+    <ClInclude Include="d3d11_shaders.h">
+      <Filter>dx11</Filter>
+    </ClInclude>
+    <ClInclude Include="..\third_party\minhook\src\hde\hde64.h">
+      <Filter>minhook</Filter>
+    </ClInclude>
+    <ClInclude Include="..\third_party\minhook\include\MinHook.h">
+      <Filter>minhook</Filter>
+    </ClInclude>
+    <ClInclude Include="..\third_party\minhook\src\hde\pstdint.h">
+      <Filter>minhook</Filter>
+    </ClInclude>
+    <ClInclude Include="..\third_party\minhook\src\hde\table64.h">
+      <Filter>minhook</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="imgui">
       <UniqueIdentifier>{8912c65e-9fd2-4777-8bfc-149c4cec59a1}</UniqueIdentifier>
     </Filter>
+    <Filter Include="minhook">
+      <UniqueIdentifier>{ccb6e920-0805-4d02-a8cb-1df2a06d9867}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="dx11">
+      <UniqueIdentifier>{fb32b032-0135-4e03-bb42-e8dd35ece56a}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <None Include="..\README.md" />
+    <None Include="shaders\imgui_dx11.hlsl">
+      <Filter>dx11</Filter>
+    </None>
+    <None Include="..\third_party\minhook\LICENSE.txt">
+      <Filter>minhook</Filter>
+    </None>
+    <None Include="shaders\stretch.hlsl">
+      <Filter>dx11</Filter>
+    </None>
   </ItemGroup>
 </Project>

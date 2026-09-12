@@ -1,4 +1,5 @@
 #include "overlay.h"
+#include "d3d11_shaders.h"
 #include "game_addresses.h"
 #include "game_overlay.h"
 #include "hitbox_capture.h"
@@ -13,17 +14,18 @@
 #include "imgui_impl_dx11.h"
 #include "imgui_impl_dx9.h"
 #include "imgui_impl_win32.h"
+#include "MinHook.h"
 
 #include <d3d9.h>
 #include <d3d11.h>
 #include <d3d11_1.h>
-#include <d3dcompiler.h>
 #include <dxgi1_2.h>
 
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -95,7 +97,6 @@ RECT g_dragStartWindow{};
 IDXGISwapChain* g_dx11SwapChain = nullptr;
 ID3D11Device* g_dx11Device = nullptr;
 ID3D11DeviceContext* g_dx11Context = nullptr;
-ID3D11RenderTargetView* g_dx11RenderTarget = nullptr;
 ID3D11Texture2D* g_stretchSource = nullptr;
 ID3D11ShaderResourceView* g_stretchSourceView = nullptr;
 ID3D11VertexShader* g_stretchVertexShader = nullptr;
@@ -108,12 +109,109 @@ UINT g_stretchHeight = 0;
 DXGI_FORMAT g_stretchFormat = DXGI_FORMAT_UNKNOWN;
 IDirect3DDevice9* g_dx9Device = nullptr;
 HANDLE g_readyEvent = nullptr;
+bool g_diagnosticConsoleReady = false;
+bool g_debugConfigurationLoaded = false;
+bool g_debugEnabled = false;
+LONG g_presentHookObserved = 0;
+LONG g_presentIdleReported = 0;
+LONG g_presentRenderRequested = 0;
+LONG g_presentRenderReturned = 0;
+LONG g_d3d11InitializationEntered = 0;
+bool g_menuHotkeyWasDown = false;
+
+void LoadDebugConfiguration()
+{
+    wchar_t appData[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(
+        L"APPDATA", appData, static_cast<DWORD>(_countof(appData)));
+    if (!length || length >= _countof(appData)) {
+        g_debugConfigurationLoaded = true;
+        return;
+    }
+
+    const std::wstring publisher = std::wstring(appData, length) +
+        L"\\shanghaialice";
+    const std::wstring game = publisher + L"\\th06nc";
+    CreateDirectoryW(publisher.c_str(), nullptr);
+    CreateDirectoryW(game.c_str(), nullptr);
+    const std::wstring path = game + L"\\input.ini";
+
+    wchar_t value[16]{};
+    const DWORD valueLength = GetPrivateProfileStringW(
+        L"Options", L"debug", L"", value,
+        static_cast<DWORD>(_countof(value)), path.c_str());
+    if (!valueLength) {
+        WritePrivateProfileStringW(
+            L"Options", L"debug", L"0", path.c_str());
+        g_debugEnabled = false;
+    } else {
+        g_debugEnabled = wcstol(value, nullptr, 10) != 0;
+    }
+    g_debugConfigurationLoaded = true;
+}
+
+BOOL WINAPI DiagnosticConsoleControlHandler(DWORD)
+{
+    // The diagnostic console belongs to the injected overlay. Console control
+    // events must not terminate the game process while the user reads logs.
+    return TRUE;
+}
+
+void InitializeDiagnosticConsole()
+{
+    if (g_diagnosticConsoleReady)
+        return;
+
+    const HWND previousForeground = GetForegroundWindow();
+    // Always create a console owned by the injected game process. Attaching to
+    // the launcher's console made diagnostics disappear together with the
+    // launcher and, depending on how Steam spawned the game, could attach to
+    // no visible console at all.
+    FreeConsole();
+    if (!AllocConsole())
+        return;
+
+    FILE* output = nullptr;
+    FILE* error = nullptr;
+    freopen_s(&output, "CONOUT$", "w", stdout);
+    freopen_s(&error, "CONOUT$", "w", stderr);
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleTitleW(L"th06nc_prac_vibe diagnostics");
+    SetConsoleCtrlHandler(DiagnosticConsoleControlHandler, TRUE);
+    if (const HWND console = GetConsoleWindow()) {
+        // Closing a console window sends CTRL_CLOSE_EVENT to every attached
+        // process. Disable that button so reading diagnostics cannot
+        // accidentally terminate th06nc.exe.
+        if (HMENU systemMenu = GetSystemMenu(console, FALSE)) {
+            EnableMenuItem(systemMenu, SC_CLOSE, MF_BYCOMMAND | MF_GRAYED);
+            DrawMenuBar(console);
+        }
+        ShowWindow(console, SW_SHOWNOACTIVATE);
+        if (previousForeground && previousForeground != console)
+            SetForegroundWindow(previousForeground);
+    }
+
+    g_diagnosticConsoleReady = true;
+    fprintf(stdout, "[th06nc_test] Diagnostic console created by th06nc.exe (PID %lu).\n",
+        GetCurrentProcessId());
+    fflush(stdout);
+}
 
 void DebugMessage(const wchar_t* text)
 {
+    if (!IsOverlayDebugEnabled())
+        return;
     OutputDebugStringW(L"[th06nc_test] ");
     OutputDebugStringW(text);
     OutputDebugStringW(L"\n");
+    if (g_diagnosticConsoleReady) {
+        const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD written = 0;
+        WriteConsoleW(output, L"[th06nc_test] ", 14, &written, nullptr);
+        WriteConsoleW(output, text, static_cast<DWORD>(wcslen(text)), &written, nullptr);
+        WriteConsoleW(output, L"\r\n", 2, &written, nullptr);
+        fflush(stdout);
+    }
 }
 
 bool PatchPointer(void** slot, void* replacement, void** original)
@@ -214,10 +312,32 @@ bool IsKeyboardMessage(UINT message)
 
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    // Binding capture reads the selected physical key itself. Do not forward
+    // any keyboard message to ImGui or the game while that global capture
+    // state owns input.
+    if (IsKeyBindingCaptureActive() && IsKeyboardMessage(message))
+        return 0;
+
     // Keep the game out of Windows' modal caption-drag loop. The stock loop
     // stops gameplay updates and is observed by the game as an automatic
     // pause, so move the window ourselves while capture is held instead.
     switch (message) {
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+    case WM_KEYUP:
+    case WM_SYSKEYUP:
+        // F10 activates the caption menu on Windows 7. All four function keys
+        // are handled by the Present-side edge detector, so consume their
+        // window messages here without performing a second toggle.
+        if (wParam >= VK_F9 && wParam <= VK_F12)
+            return 0;
+        break;
+    case WM_CONTEXTMENU:
+        // A keyboard-generated context menu uses (-1, -1). Suppress the
+        // Shift+F10/system-menu variant without disabling mouse right-clicks.
+        if (static_cast<DWORD>(lParam) == 0xFFFFFFFFu)
+            return 0;
+        break;
     case WM_NCLBUTTONDOWN:
         if (wParam == HTCAPTION) {
             g_windowDragging = true;
@@ -282,10 +402,37 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
                         : DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
+bool EnsureWindowSubclass(HWND window)
+{
+    if (!window)
+        return false;
+    if (g_window == window && g_oldWndProc)
+        return true;
+
+    // A different process-owned swap chain may be observed before the game
+    // settles on its final output window. Never retain the old procedure for
+    // one HWND while recording another HWND as the restoration target.
+    if (g_window && g_oldWndProc)
+        SetWindowLongPtrW(g_window, GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(g_oldWndProc));
+    g_window = nullptr;
+    g_oldWndProc = nullptr;
+
+    SetLastError(0);
+    WNDPROC previous = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
+        window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(OverlayWndProc)));
+    if (!previous)
+        return false;
+    g_window = window;
+    g_oldWndProc = previous;
+    return true;
+}
+
 bool InitializeWindow(HWND window)
 {
     if (!window)
         return false;
+    DebugMessage(L"ImGui initialization: creating context");
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
@@ -316,36 +463,69 @@ bool InitializeWindow(HWND window)
     g_fontGlyphRanges.clear();
     glyphBuilder.BuildRanges(&g_fontGlyphRanges);
 
-    ImFont* font = io.Fonts->AddFontFromFileTTF(
-        "C:\\Windows\\Fonts\\msyh.ttc",
-        26.0f,
-        &font_cfg,
-        g_fontGlyphRanges.Data
-    );
+    char windowsDirectory[MAX_PATH]{};
+    const UINT windowsLength = GetWindowsDirectoryA(
+        windowsDirectory, static_cast<UINT>(_countof(windowsDirectory)));
+    const std::string fontDirectory = windowsLength && windowsLength < _countof(windowsDirectory)
+        ? std::string(windowsDirectory, windowsLength) + "\\Fonts\\"
+        : "C:\\Windows\\Fonts\\";
+    // Windows 7 commonly ships Microsoft YaHei as msyh.ttf, while newer
+    // systems use msyh.ttc. Keep CJK-capable system fallbacks before Arial so
+    // an absent collection file cannot abort the complete renderer setup.
+    constexpr const char* fontCandidates[] = {
+        "msyh.ttc", "msyh.ttf", "meiryo.ttc", "msgothic.ttc",
+        "simsun.ttc", "arial.ttf",
+    };
+    ImFont* font = nullptr;
+    std::string selectedFont;
+    for (const char* candidate : fontCandidates) {
+        const std::string path = fontDirectory + candidate;
+        if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+            continue;
+        font = io.Fonts->AddFontFromFileTTF(
+            path.c_str(), 26.0f, &font_cfg, g_fontGlyphRanges.Data);
+        if (font) {
+            selectedFont = path;
+            break;
+        }
+    }
+    if (!font) {
+        DebugMessage(L"ImGui initialization: no usable system font; trying built-in fallback");
+        font = io.Fonts->AddFontDefault();
+        selectedFont = "Dear ImGui built-in font";
+    }
 
     if (!font)
     {
+        DebugMessage(L"ImGui initialization failed: font creation returned null");
         ImGui::DestroyContext();
         return false;
     }
+
+    wchar_t fontDetail[512]{};
+    MultiByteToWideChar(CP_ACP, 0, selectedFont.c_str(), -1,
+        fontDetail, static_cast<int>(_countof(fontDetail)));
+    wchar_t fontMessage[640]{};
+    swprintf_s(fontMessage, L"ImGui initialization: selected font %ls", fontDetail);
+    DebugMessage(fontMessage);
 
     io.FontGlobalScale = uiScale;
 
+    DebugMessage(L"ImGui initialization: initializing Win32 backend");
     if (!ImGui_ImplWin32_Init(window)) {
+        DebugMessage(L"ImGui initialization failed: Win32 backend rejected the window");
         ImGui::DestroyContext();
         return false;
     }
 
-    g_window = window;
-    SetLastError(0);
-    g_oldWndProc = reinterpret_cast<WNDPROC>(
-        SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(OverlayWndProc)));
-    if (!g_oldWndProc && GetLastError() != 0) {
+    if (!EnsureWindowSubclass(window)) {
+        DebugMessage(L"ImGui initialization failed: could not subclass the game window");
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
         g_window = nullptr;
         return false;
     }
+    DebugMessage(L"ImGui initialization: window/context ready");
     return true;
 }
 
@@ -362,16 +542,21 @@ void UndoWindowInitialization()
     ImGui::DestroyContext();
 }
 
-bool CreateD3D11RenderTarget(IDXGISwapChain* swapChain)
+bool CreateD3D11RenderTarget(IDXGISwapChain* swapChain,
+    ID3D11RenderTargetView** renderTarget, D3D11_TEXTURE2D_DESC* surfaceDesc)
 {
-    if (g_dx11RenderTarget)
-        return true;
+    if (!swapChain || !renderTarget)
+        return false;
+    *renderTarget = nullptr;
     ID3D11Texture2D* backBuffer = nullptr;
     if (FAILED(swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer))))
         return false;
-    const HRESULT result = g_dx11Device->CreateRenderTargetView(backBuffer, nullptr, &g_dx11RenderTarget);
+    if (surfaceDesc)
+        backBuffer->GetDesc(surfaceDesc);
+    const HRESULT result = g_dx11Device->CreateRenderTargetView(
+        backBuffer, nullptr, renderTarget);
     backBuffer->Release();
-    return SUCCEEDED(result);
+    return SUCCEEDED(result) && *renderTarget;
 }
 
 template <typename T>
@@ -408,68 +593,15 @@ bool CreateStretchPipeline()
         g_stretchRasterizer && g_stretchDepthState)
         return true;
 
-    static constexpr char shaderSource[] = R"(
-struct VertexOutput
-{
-    float4 position : SV_POSITION;
-    float2 uv : TEXCOORD0;
-};
-
-VertexOutput VertexMain(uint vertexId : SV_VertexID)
-{
-    static const float2 positions[3] = {
-        float2(-1.0, -1.0), float2(-1.0, 3.0), float2(3.0, -1.0)
-    };
-    VertexOutput output;
-    output.position = float4(positions[vertexId], 0.0, 1.0);
-    output.uv = float2((positions[vertexId].x + 1.0) * 0.5,
-                       (1.0 - positions[vertexId].y) * 0.5);
-    return output;
-}
-
-Texture2D gameTexture : register(t0);
-SamplerState linearClamp : register(s0);
-
-float4 PixelMain(VertexOutput input) : SV_TARGET
-{
-    // Keep the right edge fixed. Only the rightmost 75% of the completed game
-    // image remains visible, making its X extent 4/3 as wide.
-    input.uv.x = 0.25 + input.uv.x * 0.75;
-    return gameTexture.Sample(linearClamp, input.uv);
-}
-)";
-
-    ID3DBlob* vertexBlob = nullptr;
-    ID3DBlob* pixelBlob = nullptr;
-    ID3DBlob* errors = nullptr;
-    HRESULT result = D3DCompile(shaderSource, sizeof(shaderSource) - 1, nullptr, nullptr, nullptr,
-        "VertexMain", "vs_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vertexBlob, &errors);
-    if (FAILED(result)) {
-        if (errors)
-            OutputDebugStringA(static_cast<const char*>(errors->GetBufferPointer()));
-        ReleaseCom(errors);
-        return false;
-    }
-    ReleaseCom(errors);
-
-    result = D3DCompile(shaderSource, sizeof(shaderSource) - 1, nullptr, nullptr, nullptr,
-        "PixelMain", "ps_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pixelBlob, &errors);
-    if (FAILED(result)) {
-        if (errors)
-            OutputDebugStringA(static_cast<const char*>(errors->GetBufferPointer()));
-        ReleaseCom(errors);
-        ReleaseCom(vertexBlob);
-        return false;
-    }
-    ReleaseCom(errors);
-
-    result = g_dx11Device->CreateVertexShader(vertexBlob->GetBufferPointer(),
-        vertexBlob->GetBufferSize(), nullptr, &g_stretchVertexShader);
+    HRESULT result = g_dx11Device->CreateVertexShader(
+        EmbeddedD3D11Shaders::kStretchVertexShader,
+        sizeof(EmbeddedD3D11Shaders::kStretchVertexShader),
+        nullptr, &g_stretchVertexShader);
     if (SUCCEEDED(result))
-        result = g_dx11Device->CreatePixelShader(pixelBlob->GetBufferPointer(),
-            pixelBlob->GetBufferSize(), nullptr, &g_stretchPixelShader);
-    ReleaseCom(pixelBlob);
-    ReleaseCom(vertexBlob);
+        result = g_dx11Device->CreatePixelShader(
+            EmbeddedD3D11Shaders::kStretchPixelShader,
+            sizeof(EmbeddedD3D11Shaders::kStretchPixelShader),
+            nullptr, &g_stretchPixelShader);
 
     D3D11_SAMPLER_DESC sampler{};
     sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -530,9 +662,10 @@ bool EnsureStretchSource(const D3D11_TEXTURE2D_DESC& backBufferDesc)
     return true;
 }
 
-void ApplyGameStretchPostProcess(IDXGISwapChain* swapChain)
+void ApplyGameStretchPostProcess(IDXGISwapChain* swapChain,
+    ID3D11RenderTargetView* renderTarget)
 {
-    if (!g_gameStretchEnabled.load() || !g_dx11Context || !g_dx11RenderTarget ||
+    if (!g_gameStretchEnabled.load() || !g_dx11Context || !renderTarget ||
         !CreateStretchPipeline())
         return;
 
@@ -595,7 +728,7 @@ void ApplyGameStretchPostProcess(IDXGISwapChain* swapChain)
         static_cast<FLOAT>(backBufferDesc.Height), 0.0f, 1.0f};
     ID3D11Buffer* noBuffer = nullptr;
     UINT zero = 0;
-    g_dx11Context->OMSetRenderTargets(1, &g_dx11RenderTarget, nullptr);
+    g_dx11Context->OMSetRenderTargets(1, &renderTarget, nullptr);
     g_dx11Context->OMSetBlendState(nullptr, blendFactor, 0xffffffffu);
     g_dx11Context->OMSetDepthStencilState(g_stretchDepthState, 0);
     g_dx11Context->RSSetState(g_stretchRasterizer);
@@ -652,38 +785,71 @@ void ApplyGameStretchPostProcess(IDXGISwapChain* swapChain)
 
 bool InitializeD3D11(IDXGISwapChain* swapChain)
 {
+    if (InterlockedCompareExchange(&g_d3d11InitializationEntered, 1, 0) == 0)
+        DebugMessage(L"D3D11 initialization: function entered");
     if (g_renderer.load() == Renderer::D3D11)
-        return true;
+        return swapChain == g_dx11SwapChain;
     if (g_renderer.load() != Renderer::None)
         return false;
 
+    DebugMessage(L"D3D11 initialization: reading swap-chain description");
+    DXGI_SWAP_CHAIN_DESC validatedDesc{};
+    const HRESULT descriptionResult = swapChain
+        ? swapChain->GetDesc(&validatedDesc) : E_POINTER;
+    if (FAILED(descriptionResult) || !validatedDesc.OutputWindow) {
+        wchar_t failure[192]{};
+        swprintf_s(failure,
+            L"D3D11 initialization failed: GetDesc=0x%08lX, hwnd=0x%p",
+            static_cast<unsigned long>(descriptionResult), validatedDesc.OutputWindow);
+        DebugMessage(failure);
+        return false;
+    }
+
+    DebugMessage(L"D3D11 initialization: acquiring UI lock");
     AcquireSRWLockExclusive(&g_uiLock);
+    DebugMessage(L"D3D11 initialization: UI lock acquired");
     if (g_renderer.load() != Renderer::None) {
-        const bool result = g_renderer.load() == Renderer::D3D11;
+        const bool result = g_renderer.load() == Renderer::D3D11 &&
+            swapChain == g_dx11SwapChain;
         ReleaseSRWLockExclusive(&g_uiLock);
         return result;
     }
 
-    DXGI_SWAP_CHAIN_DESC desc{};
-    if (FAILED(swapChain->GetDesc(&desc)) || !desc.OutputWindow ||
-        FAILED(swapChain->GetDevice(IID_PPV_ARGS(&g_dx11Device)))) {
+    const HRESULT deviceResult = swapChain->GetDevice(IID_PPV_ARGS(&g_dx11Device));
+    if (FAILED(deviceResult) || !g_dx11Device) {
+        wchar_t failure[160]{};
+        swprintf_s(failure, L"D3D11 initialization failed: GetDevice=0x%08lX",
+            static_cast<unsigned long>(deviceResult));
+        DebugMessage(failure);
         ReleaseSRWLockExclusive(&g_uiLock);
         return false;
     }
+    DebugMessage(L"D3D11 initialization: device obtained");
     g_dx11Device->GetImmediateContext(&g_dx11Context);
     g_dx11SwapChain = swapChain;
     g_dx11SwapChain->AddRef();
 
-    bool ok = InitializeWindow(desc.OutputWindow);
+    bool ok = InitializeWindow(validatedDesc.OutputWindow);
     bool rendererInitialized = false;
     if (ok) {
+        DebugMessage(L"D3D11 initialization: initializing ImGui renderer backend");
         rendererInitialized = ImGui_ImplDX11_Init(g_dx11Device, g_dx11Context);
         ok = rendererInitialized;
     }
-    if (ok)
-        ok = CreateD3D11RenderTarget(swapChain);
+    if (ok) {
+        DebugMessage(L"D3D11 initialization: creating ImGui device objects/font texture");
+        ok = ImGui_ImplDX11_CreateDeviceObjects();
+    }
     if (ok) {
         g_renderer.store(Renderer::D3D11);
+        wchar_t detail[256]{};
+        RECT client{};
+        GetClientRect(validatedDesc.OutputWindow, &client);
+        swprintf_s(detail,
+            L"Selected game D3D11 swap chain: hwnd=0x%p, client=%ldx%ld, feature=0x%X",
+            validatedDesc.OutputWindow, client.right - client.left,
+            client.bottom - client.top, static_cast<unsigned>(g_dx11Device->GetFeatureLevel()));
+        DebugMessage(detail);
         DebugMessage(L"Direct3D 11 ImGui backend initialized");
     } else {
         if (rendererInitialized)
@@ -701,46 +867,15 @@ bool InitializeD3D11(IDXGISwapChain* swapChain)
 
 bool InitializeD3D9(IDirect3DDevice9* device)
 {
-    if (g_renderer.load() == Renderer::D3D9)
-        return true;
-    if (g_renderer.load() != Renderer::None)
-        return false;
-
-    AcquireSRWLockExclusive(&g_uiLock);
-    if (g_renderer.load() != Renderer::None) {
-        const bool result = g_renderer.load() == Renderer::D3D9;
-        ReleaseSRWLockExclusive(&g_uiLock);
-        return result;
-    }
-
-    D3DDEVICE_CREATION_PARAMETERS parameters{};
-    bool ok = SUCCEEDED(device->GetCreationParameters(&parameters)) && parameters.hFocusWindow;
-    if (ok)
-        ok = InitializeWindow(parameters.hFocusWindow);
-    bool rendererInitialized = false;
-    if (ok) {
-        rendererInitialized = ImGui_ImplDX9_Init(device);
-        ok = rendererInitialized;
-    }
-    if (ok) {
-        g_dx9Device = device;
-        g_dx9Device->AddRef();
-        g_renderer.store(Renderer::D3D9);
-        DebugMessage(L"Direct3D 9 ImGui backend initialized");
-    } else {
-        if (rendererInitialized)
-            ImGui_ImplDX9_Shutdown();
-        if (ImGui::GetCurrentContext())
-            UndoWindowInitialization();
-    }
-    ReleaseSRWLockExclusive(&g_uiLock);
-    return ok;
+    // th06nc uses Direct3D 11 on Windows 7 as well. Accepting the first D3D9
+    // device seen in the process can select Steam/compatibility overlay output
+    // and permanently route every ImGui window into an auxiliary surface.
+    (void)device;
+    return false;
 }
 
 void BeginUiFrame(const char* rendererName)
 {
-    if (GetAsyncKeyState(VK_F10) & 1)
-        g_visible.store(!g_visible.load());
     const bool practiceMenuActive = IsPracticeMenuReplacementActive();
     ImGuiIO& io = ImGui::GetIO();
     io.MouseDrawCursor = g_visible.load() || practiceMenuActive ||
@@ -749,7 +884,7 @@ void BeginUiFrame(const char* rendererName)
     ImGui::NewFrame();
     UpdateAndDrawGameOverlayUi();
     DrawCapturedHitboxes();
-    // The full-screen F10 panel owns the foreground layer. Draw Pause first
+    // The full-screen F9 panel owns the foreground layer. Draw Pause first
     // so it can never float above that panel when both states are active.
     DrawPracticePauseUi();
     if (g_visible.load()) {
@@ -767,20 +902,51 @@ void BeginUiFrame(const char* rendererName)
 
 void RenderD3D11(IDXGISwapChain* swapChain)
 {
-    if (!InitializeD3D11(swapChain) || !CreateD3D11RenderTarget(swapChain))
+    if (!InitializeD3D11(swapChain))
         return;
-    ApplyGameStretchPostProcess(swapChain);
+
+    ID3D11RenderTargetView* renderTarget = nullptr;
+    D3D11_TEXTURE2D_DESC surface{};
+    if (!CreateD3D11RenderTarget(swapChain, &renderTarget, &surface))
+        return;
+
+    ApplyGameStretchPostProcess(swapChain, renderTarget);
     ImGui_ImplDX11_NewFrame();
     BeginUiFrame("Direct3D 11 / x64");
 
-    ID3D11RenderTargetView* previousTarget = nullptr;
+    ImDrawData* drawData = ImGui::GetDrawData();
+    const ImVec2 logicalSize = drawData->DisplaySize;
+    if (logicalSize.x > 0.0f && logicalSize.y > 0.0f &&
+        (logicalSize.x != surface.Width || logicalSize.y != surface.Height)) {
+        const ImVec2 scale{
+            static_cast<float>(surface.Width) / logicalSize.x,
+            static_cast<float>(surface.Height) / logicalSize.y};
+        drawData->ScaleClipRects(scale);
+        for (int listIndex = 0; listIndex < drawData->CmdListsCount; ++listIndex) {
+            ImDrawList* list = drawData->CmdLists[listIndex];
+            for (ImDrawVert& vertex : list->VtxBuffer) {
+                vertex.pos.x *= scale.x;
+                vertex.pos.y *= scale.y;
+            }
+        }
+        drawData->DisplaySize = ImVec2(
+            static_cast<float>(surface.Width), static_cast<float>(surface.Height));
+    }
+
+    ID3D11RenderTargetView* previousTargets[D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT]{};
     ID3D11DepthStencilView* previousDepth = nullptr;
-    g_dx11Context->OMGetRenderTargets(1, &previousTarget, &previousDepth);
-    g_dx11Context->OMSetRenderTargets(1, &g_dx11RenderTarget, nullptr);
-    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-    g_dx11Context->OMSetRenderTargets(1, &previousTarget, previousDepth);
+    g_dx11Context->OMGetRenderTargets(
+        D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, previousTargets, &previousDepth);
+    g_dx11Context->OMSetRenderTargets(1, &renderTarget, nullptr);
+    ImGui_ImplDX11_RenderDrawData(drawData);
+    g_dx11Context->OMSetRenderTargets(
+        D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT, previousTargets, previousDepth);
+    for (ID3D11RenderTargetView* previousTarget : previousTargets) {
+        if (previousTarget)
+            previousTarget->Release();
+    }
     if (previousDepth) previousDepth->Release();
-    if (previousTarget) previousTarget->Release();
+    renderTarget->Release();
 }
 
 void RenderD3D9(IDirect3DDevice9* device)
@@ -802,17 +968,65 @@ void HookD3D9Device(IDirect3DDevice9* device);
 
 HRESULT STDMETHODCALLTYPE HookSwapChainPresent(IDXGISwapChain* self, UINT syncInterval, UINT flags)
 {
+    if (InterlockedCompareExchange(&g_presentHookObserved, 1, 0) == 0)
+        DebugMessage(L"Direct3D 11 Present function-entry hook invoked");
+
+    // Install the lightweight window hook before ImGui itself is requested.
+    // This lets it consume Win7's F10 system-menu messages even when F10 is
+    // the first overlay key pressed after launch.
+    if (!g_oldWndProc && self) {
+        DXGI_SWAP_CHAIN_DESC earlyDesc{};
+        if (SUCCEEDED(self->GetDesc(&earlyDesc)) && earlyDesc.OutputWindow) {
+            DWORD ownerProcess = 0;
+            GetWindowThreadProcessId(earlyDesc.OutputWindow, &ownerProcess);
+            if (ownerProcess == GetCurrentProcessId()) {
+                EnsureWindowSubclass(earlyDesc.OutputWindow);
+            }
+        }
+    }
+
+    // Poll visibility hotkeys before deciding whether a renderer is needed.
+    // Previously both the main-menu hotkey and Backspace were checked only after an ImGui frame
+    // had begun, creating a circular dependency: only the native Practice UI
+    // could cause the first frame and therefore only that UI appeared.
+    const bool foreground = IsGameProcessForeground();
+    bool menuHotkeyDown = false;
+    for (int key = VK_F9; key <= VK_F12; ++key)
+        menuHotkeyDown |= (GetAsyncKeyState(key) & 0x8000) != 0;
+    if (foreground && !IsKeyBindingCaptureActive() &&
+        menuHotkeyDown && !g_menuHotkeyWasDown)
+        g_visible.store(!g_visible.load());
+    g_menuHotkeyWasDown = foreground && menuHotkeyDown;
+    UpdateGameOverlayState();
+
+    // The known-good thprac-th06nc implementation does not initialize ImGui
+    // on the first arbitrary Present in the process.  Delay all renderer work
+    // until one of our UIs actually needs a frame; on Win7, eagerly touching
+    // the swap chain during game startup can observe an incomplete/auxiliary
+    // presentation path and leave the real game swap chain unused.
+    const bool wantsOverlay = g_visible.load() ||
+        IsPracticeMenuReplacementActive() || IsGameOverlayVisible() ||
+        IsPracticePauseUiVisible() || IsHitboxDisplayEnabled() ||
+        IsAutoShooting();
+    if (!wantsOverlay) {
+        if (InterlockedCompareExchange(&g_presentIdleReported, 1, 0) == 0)
+            DebugMessage(L"Direct3D 11 Present: renderer initialization deferred until an overlay is visible");
+        return g_realSwapChainPresent(self, syncInterval, flags);
+    }
+
+    if (InterlockedCompareExchange(&g_presentRenderRequested, 1, 0) == 0)
+        DebugMessage(L"Direct3D 11 Present: overlay requested; entering renderer");
     RenderD3D11(self);
+    if (InterlockedCompareExchange(&g_presentRenderReturned, 1, 0) == 0)
+        DebugMessage(L"Direct3D 11 Present: renderer returned");
     return g_realSwapChainPresent(self, syncInterval, flags);
 }
 
 HRESULT STDMETHODCALLTYPE HookSwapChainResizeBuffers(IDXGISwapChain* self, UINT bufferCount, UINT width,
     UINT height, DXGI_FORMAT format, UINT flags)
 {
-    if (self == g_dx11SwapChain) {
-        ReleaseCom(g_dx11RenderTarget);
+    if (self == g_dx11SwapChain)
         ReleaseStretchSource();
-    }
     return g_realSwapChainResizeBuffers(self, bufferCount, width, height, format, flags);
 }
 
@@ -824,6 +1038,98 @@ void HookSwapChain(IDXGISwapChain* swapChain)
         reinterpret_cast<void**>(&g_realSwapChainPresent));
     PatchVtable(swapChain, 13, reinterpret_cast<void*>(HookSwapChainResizeBuffers),
         reinterpret_cast<void**>(&g_realSwapChainResizeBuffers));
+}
+
+bool InstallD3D11PresentDiscoveryHook()
+{
+    // Match the working zxxsmart path: create one hidden swap chain solely to
+    // obtain the runtime's shared Present/ResizeBuffers vtable entries. This
+    // also works when the practice DLL is injected after the game's real swap
+    // chain has already been created.
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    constexpr wchar_t className[] = L"th06nc_test.D3D11.discovery";
+    WNDCLASSW windowClass{};
+    windowClass.hInstance = instance;
+    windowClass.lpfnWndProc = DefWindowProcW;
+    windowClass.lpszClassName = className;
+    const ATOM atom = RegisterClassW(&windowClass);
+    if (!atom && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        return false;
+
+    HWND window = CreateWindowW(className, L"", WS_OVERLAPPED,
+        0, 0, 32, 32, nullptr, nullptr, instance, nullptr);
+    if (!window) {
+        if (atom)
+            UnregisterClassW(className, instance);
+        return false;
+    }
+
+    DXGI_SWAP_CHAIN_DESC desc{};
+    desc.BufferCount = 1;
+    desc.BufferDesc.Width = 32;
+    desc.BufferDesc.Height = 32;
+    desc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.OutputWindow = window;
+    desc.SampleDesc.Count = 1;
+    desc.Windowed = TRUE;
+
+    IDXGISwapChain* swapChain = nullptr;
+    ID3D11Device* device = nullptr;
+    ID3D11DeviceContext* context = nullptr;
+    const HRESULT result = D3D11CreateDeviceAndSwapChain(nullptr,
+        D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
+        &desc, &swapChain, &device, nullptr, &context);
+    MH_STATUS initializeStatus = MH_UNKNOWN;
+    MH_STATUS presentCreateStatus = MH_UNKNOWN;
+    MH_STATUS resizeCreateStatus = MH_UNKNOWN;
+    MH_STATUS presentEnableStatus = MH_UNKNOWN;
+    MH_STATUS resizeEnableStatus = MH_UNKNOWN;
+    if (SUCCEEDED(result) && swapChain) {
+        void** vtable = *reinterpret_cast<void***>(swapChain);
+        void* presentEntry = vtable[8];
+        void* resizeEntry = vtable[13];
+        initializeStatus = MH_Initialize();
+        if (initializeStatus == MH_OK || initializeStatus == MH_ERROR_ALREADY_INITIALIZED) {
+            presentCreateStatus = MH_CreateHook(presentEntry,
+                reinterpret_cast<void*>(HookSwapChainPresent),
+                reinterpret_cast<void**>(&g_realSwapChainPresent));
+            resizeCreateStatus = MH_CreateHook(resizeEntry,
+                reinterpret_cast<void*>(HookSwapChainResizeBuffers),
+                reinterpret_cast<void**>(&g_realSwapChainResizeBuffers));
+            if (presentCreateStatus == MH_OK ||
+                presentCreateStatus == MH_ERROR_ALREADY_CREATED)
+                presentEnableStatus = MH_EnableHook(presentEntry);
+            if (resizeCreateStatus == MH_OK ||
+                resizeCreateStatus == MH_ERROR_ALREADY_CREATED)
+                resizeEnableStatus = MH_EnableHook(resizeEntry);
+        }
+    }
+
+    if (context)
+        context->Release();
+    if (device)
+        device->Release();
+    if (swapChain)
+        swapChain->Release();
+    DestroyWindow(window);
+    if (atom)
+        UnregisterClassW(className, instance);
+
+    const bool installed = SUCCEEDED(result) && g_realSwapChainPresent &&
+        g_realSwapChainResizeBuffers &&
+        (presentEnableStatus == MH_OK || presentEnableStatus == MH_ERROR_ENABLED) &&
+        (resizeEnableStatus == MH_OK || resizeEnableStatus == MH_ERROR_ENABLED);
+    wchar_t status[384]{};
+    swprintf_s(status,
+        L"Direct3D 11 function-entry hook %ls: D3D=0x%08lX, init=%d, "
+        L"create(P/R)=%d/%d, enable(P/R)=%d/%d",
+        installed ? L"installed" : L"failed",
+        static_cast<unsigned long>(result), static_cast<int>(initializeStatus),
+        static_cast<int>(presentCreateStatus), static_cast<int>(resizeCreateStatus),
+        static_cast<int>(presentEnableStatus), static_cast<int>(resizeEnableStatus));
+    DebugMessage(status);
+    return installed;
 }
 
 HRESULT STDMETHODCALLTYPE HookFactoryCreateSwapChain(IDXGIFactory* self, IUnknown* device,
@@ -1055,6 +1361,11 @@ void RecoverAlreadyResolvedExports()
 
 } // namespace
 
+bool IsOverlayDebugEnabled()
+{
+    return g_debugConfigurationLoaded && g_debugEnabled;
+}
+
 bool IsGameStretchModeEnabled()
 {
     return g_gameStretchEnabled.load();
@@ -1139,12 +1450,17 @@ bool InstallBootstrapHook()
 
 DWORD WINAPI OverlayWorker(void*)
 {
+    LoadDebugConfiguration();
+    if (IsOverlayDebugEnabled())
+        InitializeDiagnosticConsole();
+    DebugMessage(L"Overlay worker started");
     InstallPracticeJumpHook();
     InstallPracticeMenuHook();
     InstallKeyboardInputHook();
     InstallGameOverlayHook();
     InstallReplaySupportHooks();
     InstallCollisionCaptureHook();
+    InstallD3D11PresentDiscoveryHook();
     for (int i = 0; i < 400 && g_renderer.load() == Renderer::None; ++i) {
         RecoverAlreadyResolvedExports();
         Sleep(25);

@@ -30,9 +30,11 @@
 
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
+#include "../../overlay/overlay.h"
 
 // DirectX
 #include <d3d9.h>
+#include <stdio.h>
 
 // DirectX data
 static LPDIRECT3DDEVICE9        g_pd3dDevice = NULL;
@@ -40,6 +42,39 @@ static LPDIRECT3DVERTEXBUFFER9  g_pVB = NULL;
 static LPDIRECT3DINDEXBUFFER9   g_pIB = NULL;
 static LPDIRECT3DTEXTURE9       g_FontTexture = NULL;
 static int                      g_VertexBufferSize = 5000, g_IndexBufferSize = 10000;
+
+static void ImGui_ImplDX9_ReportTextureError(const char* operation, HRESULT result,
+    int width, int height)
+{
+    if (!IsOverlayDebugEnabled())
+        return;
+    static bool reported = false;
+    if (reported)
+        return;
+    reported = true;
+
+    const HRESULT cooperativeLevel = g_pd3dDevice
+        ? g_pd3dDevice->TestCooperativeLevel() : E_POINTER;
+    char message[1024];
+    sprintf_s(message,
+        "Direct3D 9 ImGui font-texture creation failed.\n\n"
+        "Operation: %s\n"
+        "HRESULT: 0x%08lX (%ld)\n"
+        "Cooperative level: 0x%08lX (%ld)\n"
+        "Atlas size: %d x %d\n\n"
+        "Please report this complete error message.",
+        operation,
+        static_cast<unsigned long>(result), static_cast<long>(result),
+        static_cast<unsigned long>(cooperativeLevel), static_cast<long>(cooperativeLevel),
+        width, height);
+    OutputDebugStringA("[th06nc_test] ");
+    OutputDebugStringA(message);
+    OutputDebugStringA("\n");
+    fprintf(stderr, "[th06nc_test] %s\n", message);
+    fflush(stderr);
+    MessageBoxA(NULL, message, "th06nc_prac_vibe - ImGui texture error",
+        MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+}
 
 struct CUSTOMVERTEX
 {
@@ -276,6 +311,12 @@ static bool ImGui_ImplDX9_CreateFontsTexture()
     unsigned char* pixels;
     int width, height, bytes_per_pixel;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height, &bytes_per_pixel);
+    if (!pixels || width <= 0 || height <= 0 || bytes_per_pixel <= 0)
+    {
+        ImGui_ImplDX9_ReportTextureError(
+            "ImFontAtlas::GetTexDataAsRGBA32", E_FAIL, width, height);
+        return false;
+    }
 
     // Convert RGBA32 to BGRA32 (because RGBA32 is not well supported by DX9 devices)
 #ifndef IMGUI_USE_BGRA_PACKED_COLOR
@@ -290,14 +331,48 @@ static bool ImGui_ImplDX9_CreateFontsTexture()
 
     // Upload texture to graphics system
     g_FontTexture = NULL;
-    if (g_pd3dDevice->CreateTexture(width, height, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &g_FontTexture, NULL) < 0)
+    const HRESULT textureResult = g_pd3dDevice->CreateTexture(
+        width, height, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8,
+        D3DPOOL_DEFAULT, &g_FontTexture, NULL);
+    if (FAILED(textureResult) || !g_FontTexture)
+    {
+        ImGui_ImplDX9_ReportTextureError(
+            "IDirect3DDevice9::CreateTexture", textureResult, width, height);
+#ifndef IMGUI_USE_BGRA_PACKED_COLOR
+        if (io.Fonts->TexPixelsUseColors)
+            ImGui::MemFree(pixels);
+#endif
         return false;
+    }
     D3DLOCKED_RECT tex_locked_rect;
-    if (g_FontTexture->LockRect(0, &tex_locked_rect, NULL, 0) != D3D_OK)
+    const HRESULT lockResult = g_FontTexture->LockRect(0, &tex_locked_rect, NULL, 0);
+    if (FAILED(lockResult))
+    {
+        ImGui_ImplDX9_ReportTextureError(
+            "IDirect3DTexture9::LockRect", lockResult, width, height);
+#ifndef IMGUI_USE_BGRA_PACKED_COLOR
+        if (io.Fonts->TexPixelsUseColors)
+            ImGui::MemFree(pixels);
+#endif
+        g_FontTexture->Release();
+        g_FontTexture = NULL;
         return false;
+    }
     for (int y = 0; y < height; y++)
         memcpy((unsigned char*)tex_locked_rect.pBits + tex_locked_rect.Pitch * y, pixels + (width * bytes_per_pixel) * y, (width * bytes_per_pixel));
-    g_FontTexture->UnlockRect(0);
+    const HRESULT unlockResult = g_FontTexture->UnlockRect(0);
+    if (FAILED(unlockResult))
+    {
+        ImGui_ImplDX9_ReportTextureError(
+            "IDirect3DTexture9::UnlockRect", unlockResult, width, height);
+#ifndef IMGUI_USE_BGRA_PACKED_COLOR
+        if (io.Fonts->TexPixelsUseColors)
+            ImGui::MemFree(pixels);
+#endif
+        g_FontTexture->Release();
+        g_FontTexture = NULL;
+        return false;
+    }
 
     // Store our identifier
     io.Fonts->SetTexID((ImTextureID)g_FontTexture);
@@ -306,6 +381,14 @@ static bool ImGui_ImplDX9_CreateFontsTexture()
     if (io.Fonts->TexPixelsUseColors)
         ImGui::MemFree(pixels);
 #endif
+
+    if (IsOverlayDebugEnabled()) {
+        fprintf(stdout,
+            "[th06nc_test] Direct3D 9 ImGui font texture ready: %d x %d, "
+            "texture=%p\n",
+            width, height, static_cast<void*>(g_FontTexture));
+        fflush(stdout);
+    }
 
     return true;
 }

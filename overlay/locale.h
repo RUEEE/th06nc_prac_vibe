@@ -18,7 +18,7 @@ enum class LocaleText {
     InjectionActive,
     Renderer,
     ProcessId,
-    F10Hint,
+    MenuHotkeyHint,
     ShowDemo,
     AutoShoot,
     KeyBindings,

@@ -15,8 +15,10 @@ bool IsGameProcessForeground();
 bool IsAutoShootEnabled();
 void SetAutoShootEnabled(bool enabled);
 bool IsAutoShooting();
+// True while the F9-F12 key-binding UI is waiting for a physical key. All
+// gameplay and trainer hotkeys should ignore keyboard input in this state.
+bool IsKeyBindingCaptureActive();
 bool IsRetryKeyPressed();
 bool IsExitKeyPressed();
-bool IsConfirmKeyPressed();
 void DrawKeyBindingUi();
 void AppendKeyBindingGlyphText(std::string& output);

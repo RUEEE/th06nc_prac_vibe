@@ -4,6 +4,8 @@
 #include <d3d11.h>
 #include <dxgi.h>
 
+#include "../overlay/d3d11_shaders.h"
+
 #include <cstdio>
 
 using CreateFactory1Fn = HRESULT(WINAPI*)(REFIID, void**);
@@ -45,6 +47,48 @@ int wmain()
             D3D11_SDK_VERSION, &device, nullptr, &context)))
         return 12;
 
+    ID3D11VertexShader* imguiVertexShader = nullptr;
+    ID3D11PixelShader* imguiPixelShader = nullptr;
+    ID3D11VertexShader* stretchVertexShader = nullptr;
+    ID3D11PixelShader* stretchPixelShader = nullptr;
+    ID3D11InputLayout* imguiInputLayout = nullptr;
+    const D3D11_INPUT_ELEMENT_DESC imguiLayout[] = {
+        {"POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0,
+            D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8,
+            D3D11_INPUT_PER_VERTEX_DATA, 0},
+        {"COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16,
+            D3D11_INPUT_PER_VERTEX_DATA, 0},
+    };
+    const bool shadersValid =
+        SUCCEEDED(device->CreateVertexShader(
+            EmbeddedD3D11Shaders::kImGuiVertexShader,
+            sizeof(EmbeddedD3D11Shaders::kImGuiVertexShader), nullptr,
+            &imguiVertexShader)) &&
+        SUCCEEDED(device->CreatePixelShader(
+            EmbeddedD3D11Shaders::kImGuiPixelShader,
+            sizeof(EmbeddedD3D11Shaders::kImGuiPixelShader), nullptr,
+            &imguiPixelShader)) &&
+        SUCCEEDED(device->CreateVertexShader(
+            EmbeddedD3D11Shaders::kStretchVertexShader,
+            sizeof(EmbeddedD3D11Shaders::kStretchVertexShader), nullptr,
+            &stretchVertexShader)) &&
+        SUCCEEDED(device->CreatePixelShader(
+            EmbeddedD3D11Shaders::kStretchPixelShader,
+            sizeof(EmbeddedD3D11Shaders::kStretchPixelShader), nullptr,
+            &stretchPixelShader)) &&
+        SUCCEEDED(device->CreateInputLayout(imguiLayout, 3,
+            EmbeddedD3D11Shaders::kImGuiVertexShader,
+            sizeof(EmbeddedD3D11Shaders::kImGuiVertexShader),
+            &imguiInputLayout));
+    if (imguiVertexShader) imguiVertexShader->Release();
+    if (imguiPixelShader) imguiPixelShader->Release();
+    if (stretchVertexShader) stretchVertexShader->Release();
+    if (stretchPixelShader) stretchPixelShader->Release();
+    if (imguiInputLayout) imguiInputLayout->Release();
+    if (!shadersValid)
+        return 15;
+
     DXGI_SWAP_CHAIN_DESC desc{};
     desc.BufferDesc.Width = 640;
     desc.BufferDesc.Height = 480;
@@ -81,4 +125,3 @@ int wmain()
     DestroyWindow(window);
     return ready ? 0 : 14;
 }
-
