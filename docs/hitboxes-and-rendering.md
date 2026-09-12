@@ -53,6 +53,35 @@ configurable and persistent.
 The calibration controls are visualization-only and never change native
 collision behavior.
 
+## Optional square collision
+
+The non-persistent **Use square collision** option changes the axis-aligned
+player collision handled by `+0x6A980`:
+
+- circle versus circle becomes AABB versus AABB; each former circle becomes a
+  square whose side length equals its original diameter;
+- player circle versus an axis-aligned rectangle becomes AABB versus AABB;
+- ordinary bullet graze changes from a radius-squared Euclidean test to an
+  axis-aligned square test with the same diameter;
+- rotated laser/OBB collision and laser graze at `+0x6ABA0` remain native and
+  unchanged.
+
+The hook performs the requested AABB test first. For a hit that lies in a new
+square corner, it temporarily supplies the native routine with the minimum
+player radius needed to enter its original hit branch, then restores
+`player+0x774C` immediately. This retains the native death, deathbomb, bullet
+state, and return-value behavior. The visualization switches the affected
+circles, including the player hitbox, to matching axis-aligned squares; the
+ordinary bullet-graze range changes to a matching white square. Rotated lasers
+remain OBBs because their gameplay tests are not changed by this option.
+
+The bullet graze test is inlined in `BulletManagerUpdate`: `+0x1119B` normally
+adds `dx² + dy²`, `+0x1119F` squares the combined radius, and `+0x111A3`
+compares them. Square mode changes only the four-byte `addss xmm0,xmm1` at
+`+0x1119B` to `maxss xmm0,xmm1`. The resulting comparison
+`r² > max(dx²,dy²)` is exactly the desired AABB test. Disabling the option
+restores the original instruction bytes.
+
 ## Practice-only visibility
 
 The full-screen menu's hitbox checkbox is enabled only for an active Practice

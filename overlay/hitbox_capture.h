@@ -7,6 +7,8 @@ const char* CollisionCaptureStatus();
 bool IsHitboxDisplayEnabled();
 bool IsHitboxDisplayActive();
 void SetHitboxDisplayEnabled(bool enabled);
+bool IsSquareHitboxModeEnabled();
+void SetSquareHitboxModeEnabled(bool enabled);
 // Draws the compact persistent offset/scale/color controls shown immediately
 // below the full-screen menu's hitbox checkbox.
 void DrawHitboxDisplayControlsUi();

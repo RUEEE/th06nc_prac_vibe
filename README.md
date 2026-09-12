@@ -4,12 +4,38 @@
 
 # th06nc_prac_vibe
 
-**版本 / Version:** 0.3.1
+**版本 / Version:** 0.3.3
 **作者 / Author:** RUEEE (GPT used)
 
 [中文](#中文说明) | [English](#english)
 
 ## 更新日志 / Changelog
+
+### 0.3.3 — 2026-09-12（9.12）
+
+- 判定显示新增可持久化的偏移、缩放与颜色设置；画面拉伸开关也会保存，且关闭
+  F9–F12 菜单后仍持续生效。拉伸模式下判定图形同步进行右侧锚定变换，ImGui
+  本身保持原比例。
+- 判定图形改为显示对象自身尺寸：弹幕不再额外叠加自机半径，正向矩形使用直角；
+  自机半径读取 `player + 0x774C`，并额外显示半径增加 20 的普通弹幕擦弹范围。
+- 新增不持久化的方判模式：圆圆、圆与正向 AABB，以及普通弹幕擦弹均改为
+  AABB 判定并同步显示为方形；旋转激光的碰撞与擦弹 OBB 保持原样。
+- 修复 ImGui 数值控件双击进入文本输入后，首个键盘消息泄漏给游戏并中断编辑的
+  问题；全屏菜单显示时由 ImGui 完整接管窗口鼠标和键盘消息。
+
+- Added persistent hitbox offset, scale, and color controls. Stretch mode is
+  also saved, remains active after the F9–F12 panel closes, and applies the
+  matching right-anchored transform to hitbox graphics without stretching
+  ImGui.
+- Hitbox graphics now use each object's own dimensions. The player radius is
+  read from `player + 0x774C`, with an additional ordinary-bullet graze range
+  at player radius + 20.
+- Added a non-persistent square-collision mode for circle/circle,
+  circle/axis-aligned-box, and ordinary bullet-graze tests. Rotated laser
+  collision and graze OBBs remain unchanged.
+- Fixed numeric/text editing losing its first character to the game after a
+  double-click; the full-screen panel now owns window mouse and keyboard input
+  while visible.
 
 ### 0.3.2 — 2026-09-12（9.12）
 - 修复部分道中，修复 ESC 菜单。
@@ -120,6 +146,7 @@ ECL 修改前会验证关卡、文件大小和内容指纹，避免把某一面�
 - 重试、直接退出和菜单确认键也可修改（默认 R、Q、Enter）；确认键写入与 Z 相同的原生菜单确认位，但不会触发射击。
 - 自动射击时左上角显示 `A`，其逻辑输入可正常写入 Replay。
 - 仅练习模式可开启判定显示，包含弹幕、矩形判定、旋转激光、自机判定与擦弹范围；可调整并保存偏移、缩放和颜色。
+- 可临时把圆圆、圆与正向 AABB、普通弹幕擦弹判定改为方形 AABB 判定，并同步修改判定显示；斜向激光及其擦弹 OBB 不变，该开关不保存。
 - 可调整游戏 FPS/速度。
 - D3D11 拉伸模式将游戏画面以右侧为锚点进行水平放大，判定显示同步变换而 ImGui 不参与拉伸；开关会保存到配置。
 
@@ -290,6 +317,10 @@ Nonspell, Spell, and Frame.
   selection is stored in the same input configuration.
 - Practice-only bullet, rectangle, rotated-laser, player-hitbox, and graze-range
   display, with persistent offset, scale, and color controls.
+- Optional non-persistent square-collision mode converts circle/circle and
+  circle/axis-aligned-box tests, including ordinary bullet graze, to matching
+  AABB tests; rotated laser collision/graze OBBs stay unchanged and the
+  visualization follows the selected shape.
 - Configurable FPS/game speed.
 - Persistent D3D11 right-anchored horizontal game stretch; hitboxes follow the
   same transform while ImGui remains unstretched.

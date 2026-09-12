@@ -57,6 +57,9 @@ void DrawPracticeBaseUi(const char* rendererName)
     } else {
         ImGui::TextDisabled("[ ] %s", S(ShowHitboxes));
     }
+    bool squareHitboxes = IsSquareHitboxModeEnabled();
+    if (ImGui::Checkbox(S(SquareHitboxes), &squareHitboxes))
+        SetSquareHitboxModeEnabled(squareHitboxes);
     bool stretchMode = IsGameStretchModeEnabled();
     if (ImGui::Checkbox(S(ApplyStretch), &stretchMode))
         SetGameStretchModeEnabled(stretchMode);

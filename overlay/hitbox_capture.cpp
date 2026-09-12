@@ -44,6 +44,12 @@ constexpr unsigned char kExpectedStageDrawPrologue[kStageDrawPrologueSize] = {
 constexpr size_t kMaximumHitboxesPerFrame = 32768;
 constexpr size_t kBulletCount = 0x280;
 constexpr size_t kBulletStride = 0x620;
+constexpr unsigned char kRoundGrazeDistanceCombine[4] = {
+    0xF3, 0x0F, 0x58, 0xC1 // addss xmm0, xmm1
+};
+constexpr unsigned char kSquareGrazeDistanceCombine[4] = {
+    0xF3, 0x0F, 0x5F, 0xC1 // maxss xmm0, xmm1
+};
 
 struct Float2 {
     float x;
@@ -98,6 +104,7 @@ std::vector<Hitbox> g_pendingHitboxes;
 std::vector<Hitbox> g_renderHitboxes;
 
 bool g_showHitboxes = false;
+bool g_squareHitboxes = false;
 bool g_fillHitboxes = true;
 bool g_showCenters = false;
 bool g_showSizeLabels = false;
@@ -204,6 +211,34 @@ bool IsPracticeRunActive()
         (practiceFlag && *practiceFlag != 0);
 }
 
+bool ApplyBulletGrazeSquarePatch(bool enabled)
+{
+    auto* target = ResolveGameAddress<unsigned char>(
+        GameAddress::BulletGrazeDistanceCombine);
+    if (!target)
+        return false;
+    const auto& wanted = enabled
+        ? kSquareGrazeDistanceCombine
+        : kRoundGrazeDistanceCombine;
+    if (std::memcmp(target, wanted, sizeof(wanted)) == 0)
+        return true;
+    const auto& expected = enabled
+        ? kRoundGrazeDistanceCombine
+        : kSquareGrazeDistanceCombine;
+    if (std::memcmp(target, expected, sizeof(expected)) != 0)
+        return false;
+
+    DWORD oldProtection = 0;
+    if (!VirtualProtect(target, sizeof(wanted), PAGE_EXECUTE_READWRITE,
+            &oldProtection))
+        return false;
+    std::memcpy(target, wanted, sizeof(wanted));
+    FlushInstructionCache(GetCurrentProcess(), target, sizeof(wanted));
+    DWORD ignored = 0;
+    VirtualProtect(target, sizeof(wanted), oldProtection, &ignored);
+    return true;
+}
+
 int __fastcall CaptureCollision(void* playerContext, const Float2* position,
     const Float2* size, bool circular)
 {
@@ -222,6 +257,59 @@ int __fastcall CaptureCollision(void* playerContext, const Float2* position,
         (!circular || !g_poolHookInstalled)) {
         if (g_pendingHitboxes.size() < g_pendingHitboxes.capacity())
             g_pendingHitboxes.push_back(hitbox);
+    }
+
+    // Square mode changes only the player-versus-axis-aligned-shape test.
+    // Keep calling the native routine so its hit/death/deathbomb and return
+    // value behavior remains intact. The native circle tests are a subset of
+    // the requested AABB test, so only an AABB hit in a formerly rounded
+    // corner needs a temporarily enlarged player radius.
+    float* playerRadius = valid
+        ? reinterpret_cast<float*>(static_cast<std::byte*>(playerContext) +
+              GameField(GameObjectField::PlayerCollisionRadius))
+        : nullptr;
+    if (g_squareHitboxes && playerRadius &&
+        std::isfinite(*playerRadius) && *playerRadius >= 0.0f) {
+        const auto* playerPosition = reinterpret_cast<const Float2*>(
+            static_cast<const std::byte*>(playerContext) +
+            GameField(GameObjectField::PlayerPosition));
+        if (std::isfinite(playerPosition->x) &&
+            std::isfinite(playerPosition->y)) {
+            const float dx = std::abs(playerPosition->x - position->x);
+            const float dy = std::abs(playerPosition->y - position->y);
+            const float originalRadius = *playerRadius;
+            const float objectHalfWidth = std::abs(size->x) * 0.5f;
+            const float objectHalfHeight = std::abs(size->y) * 0.5f;
+            const float squareHalfWidth = circular
+                ? std::min(objectHalfWidth, objectHalfHeight)
+                : objectHalfWidth;
+            const float squareHalfHeight = circular
+                ? squareHalfWidth
+                : objectHalfHeight;
+            const bool squareHit =
+                dx < squareHalfWidth + originalRadius &&
+                dy < squareHalfHeight + originalRadius;
+            if (squareHit) {
+                float requiredRadius = originalRadius;
+                if (circular) {
+                    requiredRadius = std::max(0.0f,
+                        std::hypot(dx, dy) - squareHalfWidth);
+                } else {
+                    const float nearestDx =
+                        std::max(0.0f, dx - objectHalfWidth);
+                    const float nearestDy =
+                        std::max(0.0f, dy - objectHalfHeight);
+                    requiredRadius = std::hypot(nearestDx, nearestDy);
+                }
+                if (requiredRadius >= originalRadius)
+                    *playerRadius = std::nextafter(requiredRadius,
+                        std::numeric_limits<float>::infinity());
+                const int result = g_originalCollision(
+                    playerContext, position, size, circular);
+                *playerRadius = originalRadius;
+                return result;
+            }
+        }
     }
 
     return g_originalCollision(playerContext, position, size, circular);
@@ -278,7 +366,7 @@ void* AllocateNearAddress(void* target, size_t size)
     const uintptr_t targetAddress = reinterpret_cast<uintptr_t>(target);
     const uintptr_t minimumApplication = reinterpret_cast<uintptr_t>(info.lpMinimumApplicationAddress);
     const uintptr_t maximumApplication = reinterpret_cast<uintptr_t>(info.lpMaximumApplicationAddress);
-    const uintptr_t reach = static_cast<uintptr_t>(std::numeric_limits<int32_t>::max()) - 0x10000;
+    constexpr uintptr_t reach = static_cast<uintptr_t>(std::numeric_limits<int32_t>::max()) - 0x10000;
     const uintptr_t low = targetAddress > reach
         ? std::max(minimumApplication, targetAddress - reach)
         : minimumApplication;
@@ -649,7 +737,10 @@ void DrawCapturedHitboxes()
         const float rawHalfWidth = width * 0.5f;
         const float rawHalfHeight = height * 0.5f;
         const float equalityTolerance = std::max(0.01f, std::max(width, height) * 0.01f);
-        const bool visuallyCircular = !hitbox.rotated &&
+        const bool squareCollisionDisplay =
+            g_squareHitboxes && hitbox.circular && !hitbox.rotated;
+        const bool visuallyCircular = !squareCollisionDisplay &&
+            !hitbox.rotated &&
             (hitbox.circular || g_shapeDisplayMode == 2 ||
                 (g_shapeDisplayMode == 1 &&
                     std::abs(width - height) <= equalityTolerance));
@@ -664,8 +755,16 @@ void DrawCapturedHitboxes()
             labelTop = position.y - radiusY;
             std::snprintf(sizeText, sizeof(sizeText), "%.3f", rawRadius);
         } else {
-            const float halfWidth = rawHalfWidth;
-            const float halfHeight = rawHalfHeight;
+            const float squareRadius =
+                squareCollisionDisplay
+                ? std::min(rawHalfWidth, rawHalfHeight)
+                : 0.0f;
+            const float halfWidth = squareCollisionDisplay
+                ? squareRadius
+                : rawHalfWidth;
+            const float halfHeight = squareCollisionDisplay
+                ? squareRadius
+                : rawHalfHeight;
             if (hitbox.rotated) {
                 const Float2 cornersWorld[4] = {
                     RotateAround({hitbox.position.x - halfWidth,
@@ -724,11 +823,30 @@ void DrawCapturedHitboxes()
         const float radiusX = playerRadius * transform.scaleX;
         const float radiusY = playerRadius * transform.scaleY;
         const float grazeRadius = playerRadius + 20.0f;
-        DrawEllipse(draw, position, grazeRadius * transform.scaleX,
-            grazeRadius * transform.scaleY, IM_COL32(255, 255, 255, 255),
-            0, false, 2.0f);
-        DrawEllipse(draw, position, radiusX, radiusY, outline, fill,
-            g_fillHitboxes, g_lineThickness);
+        const float grazeRadiusX = grazeRadius * transform.scaleX;
+        const float grazeRadiusY = grazeRadius * transform.scaleY;
+        if (g_squareHitboxes) {
+            draw->AddRect(
+                ImVec2(position.x - grazeRadiusX,
+                    position.y - grazeRadiusY),
+                ImVec2(position.x + grazeRadiusX,
+                    position.y + grazeRadiusY),
+                IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f);
+        } else {
+            DrawEllipse(draw, position, grazeRadiusX, grazeRadiusY,
+                IM_COL32(255, 255, 255, 255), 0, false, 2.0f);
+        }
+        if (g_squareHitboxes) {
+            const ImVec2 minimum(position.x - radiusX, position.y - radiusY);
+            const ImVec2 maximum(position.x + radiusX, position.y + radiusY);
+            if (g_fillHitboxes)
+                draw->AddRectFilled(minimum, maximum, fill, 0.0f);
+            draw->AddRect(minimum, maximum, outline, 0.0f, 0,
+                g_lineThickness);
+        } else {
+            DrawEllipse(draw, position, radiusX, radiusY, outline, fill,
+                g_fillHitboxes, g_lineThickness);
+        }
         if (g_showSizeLabels) {
             char sizeText[32]{};
             std::snprintf(sizeText, sizeof(sizeText), "%.1f", playerRadius);
@@ -819,6 +937,22 @@ void SetHitboxDisplayEnabled(bool enabled)
         return;
     g_showHitboxes = enabled;
     SaveHitboxConfig();
+}
+
+bool IsSquareHitboxModeEnabled()
+{
+    return g_squareHitboxes;
+}
+
+void SetSquareHitboxModeEnabled(bool enabled)
+{
+    if (g_squareHitboxes == enabled)
+        return;
+    // Ordinary bullet graze is inlined in BulletManagerUpdate rather than
+    // routed through CollisionTest. Refuse a partial mode change if this exact
+    // instruction is not present in the supported executable.
+    if (ApplyBulletGrazeSquarePatch(enabled))
+        g_squareHitboxes = enabled;
 }
 
 void DrawHitboxDisplayControlsUi()

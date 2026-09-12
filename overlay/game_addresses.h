@@ -9,6 +9,7 @@
 // Values here are RVAs, never preferred-base virtual addresses.
 enum class GameAddress : uintptr_t {
     BulletManagerUpdate = 0x10870,       // Captures the active bullet-manager pointer.
+    BulletGrazeDistanceCombine = 0x1119B,// addss dx^2+dy^2; maxss selects square graze.
     CollisionTest = 0x6A980,             // Player-versus-bullet/laser collision test.
     LaserCollisionTest = 0x6ABA0,        // Rotated laser-versus-player collision test.
     StageDrawHigh = 0x78290,             // Upper stage-background draw layer.

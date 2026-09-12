@@ -45,6 +45,7 @@ enum class LocaleText {
     ChooseKey,
     PressAKey,
     ShowHitboxes,
+    SquareHitboxes,
     HitboxOffset,
     HitboxScale,
     HitboxColor,
