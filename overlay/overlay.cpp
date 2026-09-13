@@ -85,14 +85,21 @@ D3D9PresentFn g_realD3D9Present = nullptr;
 D3D9ResetFn g_realD3D9Reset = nullptr;
 
 SRWLOCK g_uiLock = SRWLOCK_INIT;
+// OverlayWorker polls this while the Present hook publishes initialization.
 std::atomic<Renderer> g_renderer{Renderer::None};
-std::atomic<bool> g_visible{false};
-bool g_gameStretchEnabled = false;
-HWND g_window = nullptr;
-WNDPROC g_oldWndProc = nullptr;
-bool g_windowDragging = false;
-POINT g_dragStartMouse{};
-RECT g_dragStartWindow{};
+
+struct OverlayUiRuntime {
+    bool visible = false;
+    bool gameStretchEnabled = false;
+    HWND window = nullptr;
+    WNDPROC oldWndProc = nullptr;
+    bool windowDragging = false;
+    POINT dragStartMouse{};
+    RECT dragStartWindow{};
+    bool menuHotkeyWasDown = false;
+};
+
+OverlayUiRuntime g_overlayUi{};
 
 IDXGISwapChain* g_dx11SwapChain = nullptr;
 ID3D11Device* g_dx11Device = nullptr;
@@ -118,7 +125,6 @@ LONG g_presentIdleReported = 0;
 LONG g_presentRenderRequested = 0;
 LONG g_presentRenderReturned = 0;
 LONG g_d3d11InitializationEntered = 0;
-bool g_menuHotkeyWasDown = false;
 
 void LoadDebugConfiguration()
 {
@@ -149,10 +155,10 @@ void LoadDebugConfiguration()
     } else {
         g_debugEnabled = wcstol(value, nullptr, 10) != 0;
     }
-    g_gameStretchEnabled = GetPrivateProfileIntW(
+    g_overlayUi.gameStretchEnabled = GetPrivateProfileIntW(
         L"Options", L"StretchMode", 0, path.c_str()) != 0;
     WritePrivateProfileStringW(L"Options", L"StretchMode",
-        g_gameStretchEnabled ? L"1" : L"0", path.c_str());
+        g_overlayUi.gameStretchEnabled ? L"1" : L"0", path.c_str());
     g_debugConfigurationLoaded = true;
 }
 
@@ -346,29 +352,31 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
         break;
     case WM_NCLBUTTONDOWN:
         if (wParam == HTCAPTION) {
-            g_windowDragging = true;
+            g_overlayUi.windowDragging = true;
             SetCapture(hwnd);
-            GetCursorPos(&g_dragStartMouse);
-            GetWindowRect(hwnd, &g_dragStartWindow);
+            GetCursorPos(&g_overlayUi.dragStartMouse);
+            GetWindowRect(hwnd, &g_overlayUi.dragStartWindow);
             return 0;
         }
         break;
     case WM_MOUSEMOVE:
     case WM_NCMOUSEMOVE:
-        if (g_windowDragging) {
+        if (g_overlayUi.windowDragging) {
             POINT cursor{};
             GetCursorPos(&cursor);
             SetWindowPos(hwnd, nullptr,
-                g_dragStartWindow.left + cursor.x - g_dragStartMouse.x,
-                g_dragStartWindow.top + cursor.y - g_dragStartMouse.y,
+                g_overlayUi.dragStartWindow.left + cursor.x -
+                    g_overlayUi.dragStartMouse.x,
+                g_overlayUi.dragStartWindow.top + cursor.y -
+                    g_overlayUi.dragStartMouse.y,
                 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
             return 0;
         }
         break;
     case WM_LBUTTONUP:
     case WM_NCLBUTTONUP:
-        if (g_windowDragging) {
-            g_windowDragging = false;
+        if (g_overlayUi.windowDragging) {
+            g_overlayUi.windowDragging = false;
             if (GetCapture() == hwnd)
                 ReleaseCapture();
             return 0;
@@ -376,14 +384,14 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
         break;
     case WM_SIZE:
         if (wParam == SIZE_MINIMIZED) {
-            g_windowDragging = false;
+            g_overlayUi.windowDragging = false;
             if (GetCapture() == hwnd)
                 ReleaseCapture();
         }
         break;
     case WM_CAPTURECHANGED:
     case WM_CANCELMODE:
-        g_windowDragging = false;
+        g_overlayUi.windowDragging = false;
         break;
     case WM_SYSCOMMAND:
         // Pressing Alt alone normally activates the system menu, which makes
@@ -395,7 +403,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
         break;
     }
 
-    const bool fullScreenMenuVisible = g_visible.load();
+    const bool fullScreenMenuVisible = g_overlayUi.visible;
     if (g_renderer.load() != Renderer::None &&
         (fullScreenMenuVisible || IsPracticeMenuReplacementActive() ||
             IsGameOverlayVisible() || IsPracticePauseUiVisible())) {
@@ -414,7 +422,8 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
             (IsKeyboardMessage(message) && io.WantCaptureKeyboard))
             return 1;
     }
-    return g_oldWndProc ? CallWindowProcW(g_oldWndProc, hwnd, message, wParam, lParam)
+    return g_overlayUi.oldWndProc
+        ? CallWindowProcW(g_overlayUi.oldWndProc, hwnd, message, wParam, lParam)
                         : DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
@@ -422,25 +431,25 @@ bool EnsureWindowSubclass(HWND window)
 {
     if (!window)
         return false;
-    if (g_window == window && g_oldWndProc)
+    if (g_overlayUi.window == window && g_overlayUi.oldWndProc)
         return true;
 
     // A different process-owned swap chain may be observed before the game
     // settles on its final output window. Never retain the old procedure for
     // one HWND while recording another HWND as the restoration target.
-    if (g_window && g_oldWndProc)
-        SetWindowLongPtrW(g_window, GWLP_WNDPROC,
-            reinterpret_cast<LONG_PTR>(g_oldWndProc));
-    g_window = nullptr;
-    g_oldWndProc = nullptr;
+    if (g_overlayUi.window && g_overlayUi.oldWndProc)
+        SetWindowLongPtrW(g_overlayUi.window, GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(g_overlayUi.oldWndProc));
+    g_overlayUi.window = nullptr;
+    g_overlayUi.oldWndProc = nullptr;
 
     SetLastError(0);
     WNDPROC previous = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
         window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(OverlayWndProc)));
     if (!previous)
         return false;
-    g_window = window;
-    g_oldWndProc = previous;
+    g_overlayUi.window = window;
+    g_overlayUi.oldWndProc = previous;
     return true;
 }
 
@@ -454,7 +463,7 @@ bool InitializeWindow(HWND window)
     ImGui::StyleColorsDark();
 
     constexpr float referenceHeight = 1440.0f;
-    constexpr float referenceScale = 2.5f;
+    constexpr float referenceScale = 2.25f;
     RECT clientRect{};
     const bool hasClientSize = GetClientRect(window, &clientRect) != FALSE &&
         clientRect.bottom > clientRect.top;
@@ -538,7 +547,7 @@ bool InitializeWindow(HWND window)
         DebugMessage(L"ImGui initialization failed: could not subclass the game window");
         ImGui_ImplWin32_Shutdown();
         ImGui::DestroyContext();
-        g_window = nullptr;
+        g_overlayUi.window = nullptr;
         return false;
     }
     DebugMessage(L"ImGui initialization: window/context ready");
@@ -547,13 +556,14 @@ bool InitializeWindow(HWND window)
 
 void UndoWindowInitialization()
 {
-    g_windowDragging = false;
-    if (g_window && GetCapture() == g_window)
+    g_overlayUi.windowDragging = false;
+    if (g_overlayUi.window && GetCapture() == g_overlayUi.window)
         ReleaseCapture();
-    if (g_window && g_oldWndProc)
-        SetWindowLongPtrW(g_window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(g_oldWndProc));
-    g_window = nullptr;
-    g_oldWndProc = nullptr;
+    if (g_overlayUi.window && g_overlayUi.oldWndProc)
+        SetWindowLongPtrW(g_overlayUi.window, GWLP_WNDPROC,
+            reinterpret_cast<LONG_PTR>(g_overlayUi.oldWndProc));
+    g_overlayUi.window = nullptr;
+    g_overlayUi.oldWndProc = nullptr;
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
 }
@@ -681,7 +691,7 @@ bool EnsureStretchSource(const D3D11_TEXTURE2D_DESC& backBufferDesc)
 void ApplyGameStretchPostProcess(IDXGISwapChain* swapChain,
     ID3D11RenderTargetView* renderTarget)
 {
-    if (!g_gameStretchEnabled || !g_dx11Context || !renderTarget ||
+    if (!g_overlayUi.gameStretchEnabled || !g_dx11Context || !renderTarget ||
         !CreateStretchPipeline())
         return;
 
@@ -894,7 +904,7 @@ void BeginUiFrame(const char* rendererName)
 {
     const bool practiceMenuActive = IsPracticeMenuReplacementActive();
     ImGuiIO& io = ImGui::GetIO();
-    io.MouseDrawCursor = g_visible.load() || practiceMenuActive ||
+    io.MouseDrawCursor = g_overlayUi.visible || practiceMenuActive ||
         IsGameOverlayVisible() || IsPracticePauseUiVisible();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
@@ -903,7 +913,7 @@ void BeginUiFrame(const char* rendererName)
     // The full-screen F9 panel owns the foreground layer. Draw Pause first
     // so it can never float above that panel when both states are active.
     DrawPracticePauseUi();
-    if (g_visible.load()) {
+    if (g_overlayUi.visible) {
         // Draw this full-screen window translucently. Keeping the alpha scoped
         // here leaves the Practice UI fully opaque when both are open.
         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.78f);
@@ -990,7 +1000,7 @@ HRESULT STDMETHODCALLTYPE HookSwapChainPresent(IDXGISwapChain* self, UINT syncIn
     // Install the lightweight window hook before ImGui itself is requested.
     // This lets it consume Win7's F10 system-menu messages even when F10 is
     // the first overlay key pressed after launch.
-    if (!g_oldWndProc && self) {
+    if (!g_overlayUi.oldWndProc && self) {
         DXGI_SWAP_CHAIN_DESC earlyDesc{};
         if (SUCCEEDED(self->GetDesc(&earlyDesc)) && earlyDesc.OutputWindow) {
             DWORD ownerProcess = 0;
@@ -1010,9 +1020,9 @@ HRESULT STDMETHODCALLTYPE HookSwapChainPresent(IDXGISwapChain* self, UINT syncIn
     for (int key = VK_F9; key <= VK_F12; ++key)
         menuHotkeyDown |= (GetAsyncKeyState(key) & 0x8000) != 0;
     if (foreground && !IsKeyBindingCaptureActive() &&
-        menuHotkeyDown && !g_menuHotkeyWasDown)
-        g_visible.store(!g_visible.load());
-    g_menuHotkeyWasDown = foreground && menuHotkeyDown;
+        menuHotkeyDown && !g_overlayUi.menuHotkeyWasDown)
+        g_overlayUi.visible = !g_overlayUi.visible;
+    g_overlayUi.menuHotkeyWasDown = foreground && menuHotkeyDown;
     UpdateGameOverlayState();
 
     // The known-good thprac-th06nc implementation does not initialize ImGui
@@ -1020,7 +1030,7 @@ HRESULT STDMETHODCALLTYPE HookSwapChainPresent(IDXGISwapChain* self, UINT syncIn
     // until one of our UIs actually needs a frame; on Win7, eagerly touching
     // the swap chain during game startup can observe an incomplete/auxiliary
     // presentation path and leave the real game swap chain unused.
-    const bool wantsOverlay = g_visible.load() ||
+    const bool wantsOverlay = g_overlayUi.visible ||
         IsPracticeMenuReplacementActive() || IsGameOverlayVisible() ||
         IsPracticePauseUiVisible() || IsHitboxDisplayActive() ||
         IsAutoShooting() || IsGameStretchModeEnabled();
@@ -1384,14 +1394,14 @@ bool IsOverlayDebugEnabled()
 
 bool IsGameStretchModeEnabled()
 {
-    return g_gameStretchEnabled;
+    return g_overlayUi.gameStretchEnabled;
 }
 
 void SetGameStretchModeEnabled(bool enabled)
 {
-    if (g_gameStretchEnabled == enabled)
+    if (g_overlayUi.gameStretchEnabled == enabled)
         return;
-    g_gameStretchEnabled = enabled;
+    g_overlayUi.gameStretchEnabled = enabled;
     if (!g_configurationPath.empty())
         WritePrivateProfileStringW(L"Options", L"StretchMode",
             enabled ? L"1" : L"0", g_configurationPath.c_str());

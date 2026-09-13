@@ -23,6 +23,8 @@ enum class GameAddress : uintptr_t {
     GameUpdate = 0x3A210,               // Main in-game update callback; owns Pause/state transitions.
     PlayerInitialize = 0x3A9C0,         // Final common player/resource initialization.
     PlayerUpdate = 0x68820,              // Per-frame player update.
+    HudDraw = 0x40670,                   // Draws the native in-game HUD.
+    AsciiPrintf = 0x9AA0,                // Queues formatted native ASCII text.
     AutoBombInputCheck = 0x689ED,        // Native Bomb input-edge check; auto-Bomb diverts here.
     AutoBombInputContinue = 0x689F4,     // Continuation after the overwritten input load.
     DeathBombBranch = 0x68A11,           // Native deathbomb path after the X-key edge checks.
@@ -61,13 +63,15 @@ enum class GameAddress : uintptr_t {
     CurrentShotType = 0x4F1E81,          // 0 = A, 1 = B.
     CurrentStage = 0x4F1E84,             // Active zero-based stage/group index.
     CurrentPower = 0x4F1E88,             // Current power, stored as a 16-bit value.
-    ReplayModeFlag = 0x4F278C,           // Nonzero for the lifetime of native replay playback.
+    MissCount = 0x4F1E60,                // Misses accumulated in the current run.
+    BombUseCount = 0x4F1E64,             // Bombs used in the current run.
+    ReplayModeFlag = 0x4F278C,           // Set to 1 when native replay playback starts.
     PracticeModeFlag = 0x4F27B4,         // Nonzero while a native Practice run is active.
     NativeSpellPracticeFlag = 0x4F27B5,  // Nonzero only for the game's own spell practice.
     CurrentSpellId = 0x4F27B8,           // Native spell-practice target ID.
     CurrentPointItems = 0x4F27BC,        // Current point items, stored as a 16-bit value.
     CurrentDifficulty = 0x4F27C0,        // Active difficulty index; Extra is 4.
-    ReplayPlaybackFlag = 0x4F27C4,       // Nonzero while replay input is being played back.
+    InfiniteLivesModeFlag = 0x4F27C4,    // Nonzero in the game's native infinite-lives mode.
     CurrentScore = 0x4F2798,             // Current score, stored as a 64-bit value.
     CurrentGraze = 0x4FF0CC,             // Current graze, stored as a 32-bit value.
     CurrentLives = 0x4FF0F0,             // Current lives byte.
@@ -89,6 +93,8 @@ enum class GameAddress : uintptr_t {
     BgmHandle = 0x50966C,                // Active BGM audio handle, or -1.
     BgmCurrentPath = 0xC21C0C,           // Current BGM path cached by BgmLoad.
     ReplayPath = 0x4FF164,               // Native replay path selected by the replay menu.
+    AsciiManager = 0x3DE620,              // Native ASCII renderer object (not a pointer).
+    AsciiIntegerFormat = 0x30947C,        // Native "%d" format string.
 
     InitialLivesBackup = 0xC21DE0,       // Value later restored into CurrentLives.
     InitialBombsBackup = 0xC21DE1,       // Value later restored into CurrentBombs.

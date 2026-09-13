@@ -82,20 +82,37 @@ struct ReplaySaveRequest {
 using GameCallback = int64_t(__fastcall*)(void*);
 using ReplayWriter = void(__fastcall*)(const char*, void*, size_t);
 
-GameCallback g_nativeGameUpdate = nullptr;
-GameCallback g_nativeResultInitialize = nullptr;
-ReplayWriter g_nativeReplayWrite = nullptr;
-bool g_pauseVisible = false;
-bool g_last_pause_Visible = false;
-std::atomic<PauseAction> g_pauseAction{PauseAction::None};
-std::atomic<bool> g_pauseEscapeReleased{false};
-std::atomic<int> g_pauseNavigation{0};
-std::atomic<int> g_pauseHorizontal{0};
-std::atomic<bool> g_pauseConfirm{false};
-std::atomic<bool> g_hooksInstalled{false};
-std::atomic<bool> g_replayConfigPrepared{false};
-PracticeReplayConfig g_recordedConfig{};
-bool g_haveRecordedConfig = false;
+struct PauseRuntime {
+    bool visible = false;
+    bool wasVisible = false;
+    bool escapeReleased = false;
+    bool confirm = false;
+    int navigation = 0;
+    int horizontal = 0;
+    PauseAction action = PauseAction::None;
+};
+
+struct ReplayRuntime {
+    // Hook installation runs on OverlayWorker while Present may query status.
+    std::atomic<bool> hooksInstalled{false};
+    GameCallback nativeGameUpdate = nullptr;
+    GameCallback nativeResultInitialize = nullptr;
+    ReplayWriter nativeReplayWrite = nullptr;
+    bool playbackConfigPrepared = false;
+    PracticeReplayConfig recordedConfig{};
+    bool hasRecordedConfig = false;
+};
+
+PauseRuntime g_pause{};
+ReplayRuntime g_replay{};
+
+template <typename T>
+T Take(T& value, T replacement = {})
+{
+    const T previous = value;
+    value = replacement;
+    return previous;
+}
 
 using PracticeValueMap = std::map<std::string, std::string>;
 
@@ -478,16 +495,16 @@ DWORD WINAPI FinishPracticeReplaySave(void* rawRequest)
 
 int64_t __fastcall HookedGameUpdate(void* game)
 {
-    if (!g_nativeGameUpdate)
-        return 0;
-    g_last_pause_Visible = g_pauseVisible;
+    if (!g_replay.nativeGameUpdate)
+        return g_replay.nativeGameUpdate(game);
+    g_pause.wasVisible = g_pause.visible;
 
     const auto* replay = ResolveGameAddress<uint8_t>(GameAddress::ReplayModeFlag);
     if (replay && *replay != 0) {
-        if (!g_replayConfigPrepared.load() && PreparePracticeReplayPlayback())
-            g_replayConfigPrepared.store(true);
+        if (!g_replay.playbackConfigPrepared && PreparePracticeReplayPlayback())
+            g_replay.playbackConfigPrepared = true;
     } else {
-        g_replayConfigPrepared.store(false);
+        g_replay.playbackConfigPrepared = false;
     }
     auto* currentState = ResolveGameAddress<int>(GameAddress::CurrentGameState);
     auto* nextState = ResolveGameAddress<int>(GameAddress::NextGameState);
@@ -500,23 +517,23 @@ int64_t __fastcall HookedGameUpdate(void* game)
         *currentState == 2 && *nextState == 2;
 
     if (!canOwnPause) {
-        g_pauseVisible = false;
-        g_pauseAction.store(PauseAction::None);
-        return g_nativeGameUpdate(game);
+        g_pause.visible = false;
+        g_pause.action = PauseAction::None;
+        return g_replay.nativeGameUpdate(game);
     }
 
-    if (!g_pauseVisible && paused && (!gameOver || *gameOver == 0) &&
+    if (!g_pause.visible && paused && (!gameOver || *gameOver == 0) &&
         input && previous && (*input & kEscapeInput) != 0 &&
         (*previous & kEscapeInput) == 0) {
-        g_pauseVisible=true;
-        g_pauseEscapeReleased.store(false);
-        g_pauseNavigation.store(0);
-        g_pauseHorizontal.store(0);
-        g_pauseConfirm.store(false);
+        g_pause.visible = true;
+        g_pause.escapeReleased = false;
+        g_pause.navigation = 0;
+        g_pause.horizontal = 0;
+        g_pause.confirm = false;
     }
 
-    if (!g_pauseVisible)
-        return g_nativeGameUpdate(game);
+    if (!g_pause.visible)
+        return g_replay.nativeGameUpdate(game);
 
     // Capture logical menu input on the game-update thread, before the native
     // paused callback advances current/previous state. The renderer may run
@@ -530,28 +547,34 @@ int64_t __fastcall HookedGameUpdate(void* game)
                 (allowRepeat && repeat && *repeat != 0));
     };
     if (pressed(kMenuUpInput, true))
-        g_pauseNavigation.fetch_sub(1);
+        --g_pause.navigation;
     if (pressed(kMenuDownInput, true))
-        g_pauseNavigation.fetch_add(1);
+        ++g_pause.navigation;
     if (pressed(kMenuLeftInput, true))
-        g_pauseHorizontal.fetch_sub(1);
+        --g_pause.horizontal;
     if (pressed(kMenuRightInput, true))
-        g_pauseHorizontal.fetch_add(1);
+        ++g_pause.horizontal;
     if (pressed(kMenuConfirmInput, false))
-        g_pauseConfirm.store(true);
+        g_pause.confirm = true;
 
     const bool escapeDown = input && (*input & kEscapeInput) != 0;
     if (!escapeDown) {
-        g_pauseEscapeReleased.store(true);
-    } else if (g_pauseEscapeReleased.exchange(false)) {
-        g_pauseAction.store(PauseAction::Resume);
+        g_pause.escapeReleased = true;
+    } else if (Take(g_pause.escapeReleased, false)) {
+        g_pause.action = PauseAction::Resume;
     }
 
-    const PauseAction action = g_pauseAction.exchange(PauseAction::None);
+    const PauseAction action = Take(g_pause.action, PauseAction::None);
     if (action != PauseAction::None) {
-        g_pauseVisible = false;
+        g_pause.visible = false;
         if (previous)
             *previous |= kEscapeInput;
+        if (action == PauseAction::Resume) {
+            // Match zxx exactly: the custom menu only freezes the game through
+            // PausedFlag. It must not call the native audio stop path directly;
+            // clearing the temporary flag lets the stream continue naturally.
+            return g_replay.nativeGameUpdate(game);
+        }
         if (action == PauseAction::SaveAndExit) {
             PrepareEverlastingBgmForInitialization(false);
             *nextState = 7;
@@ -572,11 +595,11 @@ int64_t __fastcall HookedGameUpdate(void* game)
             *nextState = 12;
             return 3;
         }
-        return g_nativeGameUpdate(game);
+        return 0;
     }
 
     if (!paused)
-        return g_nativeGameUpdate(game);
+        return g_replay.nativeGameUpdate(game);
     // Do not let the same Escape edge enter the game's own Pause state while
     // this overlay owns it. Keeping current/previous equal preserves every
     // other logical input bit and works for keyboard and controller alike.
@@ -584,14 +607,14 @@ int64_t __fastcall HookedGameUpdate(void* game)
         *previous |= kEscapeInput;
     const uint8_t oldPaused = *paused;
     *paused = 1;
-    const int64_t result = g_nativeGameUpdate(game);
+    const int64_t result = g_replay.nativeGameUpdate(game);
     *paused = oldPaused;
     return result;
 }
 
 int64_t __fastcall HookedResultInitialize(void* resultMenu)
 {
-    if (!g_nativeResultInitialize)
+    if (!g_replay.nativeResultInitialize)
         return 0;
     const auto* replay = ResolveGameAddress<uint8_t>(GameAddress::ReplayModeFlag);
     const auto* nextState = ResolveGameAddress<int>(GameAddress::NextGameState);
@@ -600,7 +623,7 @@ int64_t __fastcall HookedResultInitialize(void* resultMenu)
     auto* bytes = static_cast<std::byte*>(resultMenu);
     if (practiceResult && bytes)
         *reinterpret_cast<int*>(bytes + 0x9E94) = 9;
-    const int64_t result = g_nativeResultInitialize(resultMenu);
+    const int64_t result = g_replay.nativeResultInitialize(resultMenu);
     if (practiceResult && result == 0 && bytes) {
         *reinterpret_cast<int*>(bytes + 0x9E94) = 10;
         *reinterpret_cast<int*>(bytes + 0x4450) = 0;
@@ -612,7 +635,7 @@ int64_t __fastcall HookedResultInitialize(void* resultMenu)
 
 void __fastcall HookedReplayWrite(const char* path, void* data, size_t size)
 {
-    if (!g_nativeReplayWrite)
+    if (!g_replay.nativeReplayWrite)
         return;
     // Snapshot ownership and the path before native code runs. The save menu
     // may advance its own state during/after the writer call, but that must not
@@ -620,7 +643,7 @@ void __fastcall HookedReplayWrite(const char* path, void* data, size_t size)
     // CapturePracticeReplayStart snapshots the configuration at the actual
     // run initialization. Result-screen flags are no longer authoritative,
     // so the presence of that snapshot is the sole ownership token here.
-    const bool practiceReplay = g_haveRecordedConfig && data && size != 0 &&
+    const bool practiceReplay = g_replay.hasRecordedConfig && data && size != 0 &&
         size <= kMaximumReplayBytes;
     std::unique_ptr<ReplaySaveRequest> request;
     if (practiceReplay && IsReplayPath(path)) {
@@ -628,11 +651,11 @@ void __fastcall HookedReplayWrite(const char* path, void* data, size_t size)
         request->path = path;
         const auto* bytes = static_cast<const uint8_t*>(data);
         request->nativeReplay.assign(bytes, bytes + size);
-        request->config = g_recordedConfig;
+        request->config = g_replay.recordedConfig;
     }
     // Complete the game's own serialization first. Practice metadata is a
     // file trailer, not part of the native writer's input buffer.
-    g_nativeReplayWrite(path, data, size);
+    g_replay.nativeReplayWrite(path, data, size);
     if (request) {
         HANDLE worker = CreateThread(nullptr, 0, FinishPracticeReplaySave,
             request.get(), 0, nullptr);
@@ -640,7 +663,7 @@ void __fastcall HookedReplayWrite(const char* path, void* data, size_t size)
             request.release();
             CloseHandle(worker);
         }
-        g_haveRecordedConfig = false;
+        g_replay.hasRecordedConfig = false;
     }
 }
 
@@ -648,7 +671,7 @@ void __fastcall HookedReplayWrite(const char* path, void* data, size_t size)
 
 bool InstallReplaySupportHooks()
 {
-    if (g_hooksInstalled.load())
+    if (g_replay.hooksInstalled.load())
         return true;
     if (!CanInstallDetour(GameAddress::GameUpdate, kGameUpdatePrologue) ||
         !CanInstallDetour(GameAddress::ResultInitialize,
@@ -659,20 +682,21 @@ bool InstallReplaySupportHooks()
     // Install the state-owning update hook last. If an unlikely allocation or
     // protection failure occurs, a partial installation cannot take over ESC.
     const bool writer = InstallDetour(GameAddress::ReplayWrite,
-        kReplayWritePrologue, HookedReplayWrite, g_nativeReplayWrite);
+        kReplayWritePrologue, HookedReplayWrite, g_replay.nativeReplayWrite);
     const bool result = InstallDetour(GameAddress::ResultInitialize,
         kResultInitializePrologue, HookedResultInitialize,
-        g_nativeResultInitialize);
+        g_replay.nativeResultInitialize);
     const bool update = writer && result &&
         InstallDetour(GameAddress::GameUpdate,
-            kGameUpdatePrologue, HookedGameUpdate, g_nativeGameUpdate);
-    g_hooksInstalled.store(update && result && writer);
-    return g_hooksInstalled.load();
+            kGameUpdatePrologue, HookedGameUpdate,
+            g_replay.nativeGameUpdate);
+    g_replay.hooksInstalled.store(update && result && writer);
+    return g_replay.hooksInstalled.load();
 }
 
 const char* ReplaySupportHookStatus()
 {
-    return g_hooksInstalled.load() ? S(StatusActive) : S(StatusNotInstalled);
+    return g_replay.hooksInstalled.load() ? S(StatusActive) : S(StatusNotInstalled);
 }
 
 bool PreparePracticeReplayPlayback()
@@ -690,7 +714,7 @@ bool PreparePracticeReplayPlayback()
         return false;
     const bool imported = ImportPracticeReplayConfig(config);
     if (imported)
-        g_replayConfigPrepared.store(true);
+        g_replay.playbackConfigPrepared = true;
     return imported;
 }
 
@@ -699,13 +723,14 @@ void CapturePracticeReplayStart()
     const auto* replay = ResolveGameAddress<uint8_t>(GameAddress::ReplayModeFlag);
     if (replay && *replay != 0)
         return;
-    g_haveRecordedConfig = ExportPracticeReplayConfig(g_recordedConfig);
+    g_replay.hasRecordedConfig =
+        ExportPracticeReplayConfig(g_replay.recordedConfig);
 }
 
 void DrawPracticePauseUi()
 {
     static bool settingsFocused = false;
-    if (!g_pauseVisible) {
+    if (!g_pause.visible) {
         settingsFocused = false;
         return;
     }
@@ -715,7 +740,7 @@ void DrawPracticePauseUi()
     // scaled from the window height globally, so a fixed 420x385 panel became
     // cramped at the 1440p reference scale and nearly unusable above it.
     const ImVec2 windowSize(
-        std::clamp(io.DisplaySize.x * 0.60f, 720.0f, 1200.0f),
+        std::clamp(io.DisplaySize.x * 0.4f, 720.0f, 1200.0f),
         io.DisplaySize.y * 0.90f);
     ImGui::SetNextWindowPos(
         ImVec2((io.DisplaySize.x - windowSize.x) * 0.5f,
@@ -726,12 +751,12 @@ void DrawPracticePauseUi()
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize |
         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
         ImGuiWindowFlags_NoSavedSettings;
-    const int navigation = g_pauseNavigation.exchange(0);
-    const int horizontal = std::clamp(g_pauseHorizontal.exchange(0), -1, 1);
+    const int navigation = Take(g_pause.navigation);
+    const int horizontal = std::clamp(Take(g_pause.horizontal), -1, 1);
     if (ImGui::Begin(S(PauseMenu), nullptr, flags)) {
         static int selected = 0;
-        if (!g_last_pause_Visible) {
-            g_last_pause_Visible = g_pauseVisible;
+        if (!g_pause.wasVisible) {
+            g_pause.wasVisible = g_pause.visible;
             selected = 0;
             settingsFocused = false;
             ImGui::SetScrollY(0.0f);
@@ -750,9 +775,9 @@ void DrawPracticePauseUi()
         if (!settingsFocused && horizontal != 0)
             selected = (selected + horizontal + 4) % 4;
         if (IsRetryKeyPressed())
-            g_pauseAction.store(PauseAction::Restart);
+            g_pause.action = PauseAction::Restart;
         if (IsExitKeyPressed())
-            g_pauseAction.store(PauseAction::ExitWithoutReplay);
+            g_pause.action = PauseAction::ExitWithoutReplay;
 
         const float width = windowSize.x * 0.72f;
         const float buttonHeight = std::clamp(windowSize.y * 0.105f,
@@ -775,28 +800,28 @@ void DrawPracticePauseUi()
             if (keyboardHighlighted)
                 ImGui::PopStyleColor();
             if (clicked)
-                g_pauseAction.store(action);
+                g_pause.action = action;
             if (movedVertically && selected == index)
                 ImGui::SetScrollHereY(0.5f);
         };
         drawAction(0, S(Resume), PauseAction::Resume);
-        drawAction(1, S(Restart), PauseAction::Restart);
+        drawAction(1, S(ExitWithoutReplay), PauseAction::ExitWithoutReplay);
         drawAction(2, S(SaveReplayAndExit), PauseAction::SaveAndExit);
-        drawAction(3, S(ExitWithoutReplay), PauseAction::ExitWithoutReplay);
+        drawAction(3, S(Restart), PauseAction::Restart);
 
         // Confirm comes from MenuInputCurrent just like native Z/controller
         // confirmation. The configurable Confirm key injects that same bit in
         // the central keyboard mapping hook, so no separate physical poll is
         // needed here (and polling twice could turn one press into two actions).
-        const bool confirmed = g_pauseConfirm.exchange(false);
+        const bool confirmed = Take(g_pause.confirm);
         if (!settingsFocused && confirmed && selected < 4) {
             constexpr PauseAction actions[] = {
                 PauseAction::Resume, PauseAction::Restart,
                 PauseAction::SaveAndExit, PauseAction::ExitWithoutReplay};
-            g_pauseAction.store(actions[selected]);
+            g_pause.action = actions[selected];
         }
         if (settingsFocused && confirmed) {
-            g_pauseAction.store(PauseAction::Restart);
+            g_pause.action = PauseAction::Restart;
         }
 
         ImGui::Separator();
@@ -807,8 +832,7 @@ void DrawPracticePauseUi()
             settingsFocused && !enteredSettings
                 ? std::clamp(navigation, -1, 1) : 0,
             settingsFocused ? horizontal : 0,
-            settingsFocused, enteredSettings,
-            enteredSettings && navigation < 0);
+            settingsFocused, enteredSettings);
         if (editorInteraction.leaveUp) {
             settingsFocused = false;
             selected = 3;
@@ -830,5 +854,5 @@ void DrawPracticePauseUi()
 
 bool IsPracticePauseUiVisible()
 {
-    return g_pauseVisible;
+    return g_pause.visible;
 }

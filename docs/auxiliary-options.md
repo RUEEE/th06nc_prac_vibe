@@ -4,6 +4,15 @@ Backspace toggles a compact always-auto-sized ImGui window. F1-F8 hotkeys work
 while the game is foreground; their state persists while the game process is
 running.
 
+The native HUD also displays the game's accumulated miss and Bomb-use counters
+beside the life and Bomb rows. This is hooked after the stock HUD draw at RVA
+`+0x40670` and uses the game's ASCII renderer rather than ImGui. The native
+infinite-lives flag at `+0x4F27C4` already makes the stock HUD draw misses, so
+the hook adds only Bomb usage in that mode; finite-lives mode gets both added
+counters. F2 Lock Lives is independent and continues displaying misses.
+Replay playback is identified separately by `+0x4F278C` and does not itself
+decide which counters are added.
+
 ## F1: Invincible
 
 Collision normally writes player state `DIE` (`2`) at two confirmed sites:
@@ -96,8 +105,10 @@ implementation, an explicit enhanced-retry ownership flag survives the native
 Practice flag's temporary reset. `KeepBgm` is set when state 12 is requested
 and reaffirmed before the common initializer; it is explicitly cleared on
 first entry, normal/native-practice initialization, save/exit, and enhanced-
-Practice exit. The custom pause menu does not run the native pause-stop path,
-so no audio-call patch or manual stream seek is required.
+Practice exit. The custom pause menu follows the zxxsmart implementation and
+freezes gameplay by temporarily setting the native `Paused` byte around the
+game update. It does not call the audio-object stop routine directly, so closing
+the menu lets the existing stream continue instead of leaving it stopped.
 
 ## F8: Disable Bomb
 

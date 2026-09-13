@@ -60,5 +60,4 @@ struct PausedPracticeUiResult {
 // Reuses the complete pre-run editor from the in-game pause menu. Navigation
 // uses -1/0/+1 vertical and horizontal deltas captured from logical input.
 PausedPracticeUiResult DrawPausedPracticeConfigurationUi(int vertical,
-    int horizontal, bool focused, bool resetNavigation,
-    bool resetToLast = false);
+    int horizontal, bool focused, bool resetNavigation);

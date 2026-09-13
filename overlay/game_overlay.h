@@ -11,6 +11,7 @@ void UpdateGameOverlayState();
 void UpdateAndDrawGameOverlayUi();
 bool IsGameOverlayVisible();
 bool IsBombInputSuppressed();
+bool IsEverlastingBgmEnabled();
 // Sets the game's native KeepBgm byte immediately before player/game
 // initialization. It is enabled only for an enhanced-practice retry.
 void PrepareEverlastingBgmForInitialization(bool enhancedRetry);

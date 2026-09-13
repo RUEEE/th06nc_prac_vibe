@@ -10,6 +10,9 @@ The native gameplay update is still called for render preparation while the
 game's `PausedFlag` is temporarily set, but its own pause-menu state is not
 entered. This follows the same state-ownership approach as
 [`zxxsmart/thprac-th06nc`](https://github.com/zxxsmart/thprac-th06nc).
+The overlay therefore invokes the native BGM pause operation on entry and its
+resume operation on every close path, except when Persistent BGM explicitly
+requests uninterrupted playback.
 
 Exit-and-save requests supervisor state 7. The hook at `ResultInitialize` temporarily
 initializes result state 9 and then selects state 10, reproducing TH06NC's

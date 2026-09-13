@@ -64,9 +64,15 @@ label requires one enum member and one map entry. Adding a jump translation
 requires updating the jump map, not the jump control-flow data.
 
 Stage 4 Patchouli names are handled as shot-dependent/random elemental spells
-instead of assuming the normal fixed spell-card ordering.
+instead of assuming the normal fixed spell-card ordering. With Fake Shot set
+to None, the displayed name follows the currently selected Reimu/Marisa A/B
+shot; an explicit Fake Shot selection overrides only the displayed/routed
+variant as before.
 
 ## Logical input and replay compatibility
+
+Opening gameplay pause with Escape cancels the active auto-shoot latch before
+the paused frame is drawn. It does not disable the auto-shoot option itself.
 
 ### Keyboard remapping
 

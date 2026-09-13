@@ -7,7 +7,6 @@
 #include <windows.h>
 
 #include <array>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -38,6 +37,7 @@ constexpr unsigned char kExpectedKeyboardActionMergePrologue[
 constexpr uint32_t kBombAction = 0x2;
 constexpr uint32_t kShootAction = 0x1;
 constexpr uint32_t kMenuConfirmAction = 0x100;
+constexpr uint32_t kEscapeAction = 0x400;
 
 enum class BindableAction : size_t {
     Up, Down, Left, Right, Slow, Shoot, Bomb, Skip, AutoShoot,
@@ -68,11 +68,6 @@ constexpr int kDefaultKeyBindings[kBindableActionCount] = {
     VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_SHIFT, 'Z', 'X', VK_CONTROL, 'V',
     'R', 'Q', VK_RETURN,
 };
-int g_keyBindings[kBindableActionCount] = {
-    VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_SHIFT, 'Z', 'X', VK_CONTROL, 'V',
-    'R', 'Q', VK_RETURN,
-};
-
 constexpr int kArrowKeyPreset[kNativeBindableActionCount] = {
     VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_SHIFT, 'Z', 'X', VK_CONTROL
 };
@@ -92,17 +87,24 @@ using KeyboardUpdateFn = int(__fastcall*)(int forceUpdate);
 using ActionInputUpdateFn = uint32_t(__fastcall*)();
 using KeyboardActionMergeFn = uint32_t(__fastcall*)(uint32_t keyboardActions);
 
-KeyboardUpdateFn g_originalKeyboardUpdate = nullptr;
-ActionInputUpdateFn g_originalActionInputUpdate = nullptr;
-KeyboardActionMergeFn g_originalKeyboardActionMerge = nullptr;
-bool g_autoShootEnabled{false};
-bool g_autoShooting{false};
-int g_capturingBinding = -1;
-SocdMode g_socdMode{SocdMode::None};
-std::once_flag g_inputConfigLoadFlag;
-KeyboardHookStatusValue g_keyboardHookStatus{
-    KeyboardHookStatusValue::NotInstalled};
-std::byte* g_moduleBase = nullptr;
+struct KeyboardRuntime {
+    std::array<int, kBindableActionCount> bindings{
+        VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_SHIFT, 'Z', 'X', VK_CONTROL,
+        'V', 'R', 'Q', VK_RETURN,
+    };
+    KeyboardUpdateFn originalKeyboardUpdate = nullptr;
+    ActionInputUpdateFn originalActionInputUpdate = nullptr;
+    KeyboardActionMergeFn originalKeyboardActionMerge = nullptr;
+    bool autoShootEnabled = false;
+    bool autoShooting = false;
+    int capturingBinding = -1;
+    SocdMode socdMode = SocdMode::None;
+    std::once_flag configLoadFlag;
+    KeyboardHookStatusValue hookStatus = KeyboardHookStatusValue::NotInstalled;
+    std::byte* moduleBase = nullptr;
+};
+
+KeyboardRuntime g_keyboard{};
 
 const wchar_t* const kBindingConfigNames[kBindableActionCount] = {
     L"Up", L"Down", L"Left", L"Right", L"Focus", L"Shoot", L"Bomb", L"Skip",
@@ -137,18 +139,20 @@ void SaveInputConfig()
     wchar_t value[32]{};
     for (size_t i = 0; i < kBindableActionCount; ++i) {
         _snwprintf_s(value, _countof(value), _TRUNCATE, L"%d",
-            g_keyBindings[i]);
+            g_keyboard.bindings[i]);
         WritePrivateProfileStringW(L"Keys", kBindingConfigNames[i], value,
             path.c_str());
     }
-    WritePrivateProfileStringW(L"Options", L"AutoShootEnabled", g_autoShootEnabled ? L"1" : L"0", path.c_str());
-    _snwprintf_s(value, _countof(value), _TRUNCATE, L"%d", static_cast<int>(g_socdMode));
+    WritePrivateProfileStringW(L"Options", L"AutoShootEnabled",
+        g_keyboard.autoShootEnabled ? L"1" : L"0", path.c_str());
+    _snwprintf_s(value, _countof(value), _TRUNCATE, L"%d",
+        static_cast<int>(g_keyboard.socdMode));
     WritePrivateProfileStringW(L"Options", L"SOCD", value, path.c_str());
 }
 
 void LoadInputConfig()
 {
-    std::call_once(g_inputConfigLoadFlag, [] {
+    std::call_once(g_keyboard.configLoadFlag, [] {
         const std::wstring path = InputConfigPath();
         if (path.empty())
             return;
@@ -157,15 +161,15 @@ void LoadInputConfig()
             const int loaded = GetPrivateProfileIntW(L"Keys",
                 kBindingConfigNames[i], fallback, path.c_str());
             const int key = NormalizeBindingKey(loaded);
-            g_keyBindings[i] = (IsAllowedBindingKey(key) ? key : fallback);
+            g_keyboard.bindings[i] = IsAllowedBindingKey(key) ? key : fallback;
         }
-        g_autoShootEnabled = (GetPrivateProfileIntW(L"Options",
-            L"AutoShootEnabled", 0, path.c_str()) != 0);
+        g_keyboard.autoShootEnabled = GetPrivateProfileIntW(L"Options",
+            L"AutoShootEnabled", 0, path.c_str()) != 0;
         const int socd = GetPrivateProfileIntW(L"Options", L"SOCD", 0,
             path.c_str());
         if (socd >= static_cast<int>(SocdMode::None) &&
             socd <= static_cast<int>(SocdMode::Neutral))
-            g_socdMode = (static_cast<SocdMode>(socd));
+            g_keyboard.socdMode = static_cast<SocdMode>(socd);
         // Materialize every field and replace any unsupported legacy value
         // with its per-action arrow-layout default immediately.
         SaveInputConfig();
@@ -174,7 +178,7 @@ void LoadInputConfig()
 
 bool IsBindingDown(BindableAction action)
 {
-    const int key = g_keyBindings[static_cast<size_t>(action)];
+    const int key = g_keyboard.bindings[static_cast<size_t>(action)];
     return IsGameProcessForeground() && key >= 0 && key < 256 &&
         (GetAsyncKeyState(key) & 0x8000) != 0;
 }
@@ -243,22 +247,22 @@ uint32_t ResolveSocdAxis(bool negativeDown, bool positiveDown,
 
 uint32_t __fastcall FilterKeyboardActionMerge(uint32_t keyboardActions)
 {
-    if (!g_originalKeyboardActionMerge)
+    if (!g_keyboard.originalKeyboardActionMerge)
         return keyboardActions;
-    const auto* replayPlayback =
-        ResolveGameAddress<uint8_t>(GameAddress::ReplayPlaybackFlag);
-    if (replayPlayback && *replayPlayback != 0)
-        return g_originalKeyboardActionMerge(keyboardActions);
+    const auto* replayMode =
+        ResolveGameAddress<uint8_t>(GameAddress::ReplayModeFlag);
+    if (replayMode && *replayMode != 0)
+        return g_keyboard.originalKeyboardActionMerge(keyboardActions);
 
     constexpr uint32_t remappedMask = 0x10 | 0x20 | 0x40 | 0x80 |
         0x4 | 0x8101 | 0x202 | 0x100;
     keyboardActions &= ~remappedMask;
-    if (g_capturingBinding >= 0)
-        return g_originalKeyboardActionMerge(keyboardActions);
+    if (g_keyboard.capturingBinding >= 0)
+        return g_keyboard.originalKeyboardActionMerge(keyboardActions);
     static AxisSocdState verticalState;
     static AxisSocdState horizontalState;
     static SocdMode previousMode = SocdMode::None;
-    const SocdMode mode = g_socdMode;
+    const SocdMode mode = g_keyboard.socdMode;
     if (mode != previousMode) {
         verticalState = {};
         horizontalState = {};
@@ -289,30 +293,30 @@ uint32_t __fastcall FilterKeyboardActionMerge(uint32_t keyboardActions)
         keyboardActions |= kMenuConfirmAction;
     // The original function now receives the replacement keyboard word and
     // still performs all of its native controller/joystick merging.
-    return g_originalKeyboardActionMerge(keyboardActions);
+    return g_keyboard.originalKeyboardActionMerge(keyboardActions);
 }
 
 void ClearGameKeyboardState()
 {
-    if (!g_moduleBase)
+    if (!g_keyboard.moduleBase)
         return;
 
     // AE180 writes the raw 256-key state here. A9F20 consumes this buffer
     // immediately after the update call, so publishing zeroes represents a
     // successful frame with no keys held and also prevents sticky keys.
-    std::memset(g_moduleBase + GameRva(GameAddress::KeyboardState), 0,
+    std::memset(g_keyboard.moduleBase + GameRva(GameAddress::KeyboardState), 0,
         kKeyboardStateSize);
 
     // Clear the cached modifier/keyboard-valid fields maintained by AE180's
     // fallback path as well. This keeps every keyboard consumer consistent.
-    std::memset(g_moduleBase + GameRva(GameAddress::KeyboardMetadata), 0,
+    std::memset(g_keyboard.moduleBase + GameRva(GameAddress::KeyboardMetadata), 0,
         kKeyboardMetadataSize);
 }
 
 int __fastcall FilterKeyboardUpdate(int forceUpdate)
 {
     if (IsGameProcessForeground())
-        return g_originalKeyboardUpdate(forceUpdate);
+        return g_keyboard.originalKeyboardUpdate(forceUpdate);
 
     ClearGameKeyboardState();
     return 1;
@@ -320,23 +324,24 @@ int __fastcall FilterKeyboardUpdate(int forceUpdate)
 
 uint32_t __fastcall FilterActionInputUpdate()
 {
-    uint32_t actions = g_originalActionInputUpdate();
-    const auto* replayPlayback =
-        ResolveGameAddress<uint8_t>(GameAddress::ReplayPlaybackFlag);
-    const bool isReplayPlayback = replayPlayback && *replayPlayback != 0;
+    uint32_t actions = g_keyboard.originalActionInputUpdate();
+    const bool escapeDown = (actions & kEscapeAction) != 0;
+    const auto* replayMode =
+        ResolveGameAddress<uint8_t>(GameAddress::ReplayModeFlag);
+    const bool isReplayPlayback = replayMode && *replayMode != 0;
 
     static bool autoShootKeyWasDown = false;
     const bool foreground = IsGameProcessForeground();
-    const bool capturingBinding = g_capturingBinding >= 0;
+    const bool capturingBinding = g_keyboard.capturingBinding >= 0;
     const bool autoShootKeyDown = IsBindingDown(BindableAction::AutoShoot);
     const bool autoShootKeyPressed =
         !capturingBinding && autoShootKeyDown && !autoShootKeyWasDown;
     autoShootKeyWasDown = autoShootKeyDown;
 
-    if (!g_autoShootEnabled || isReplayPlayback) {
-        g_autoShooting = false;
+    if (!g_keyboard.autoShootEnabled || isReplayPlayback) {
+        g_keyboard.autoShooting = false;
     } else {
-        bool autoShooting = g_autoShooting;
+        bool autoShooting = g_keyboard.autoShooting;
         if (autoShootKeyPressed)
             autoShooting = !autoShooting;
 
@@ -348,10 +353,13 @@ uint32_t __fastcall FilterActionInputUpdate()
                 IsBindingDown(BindableAction::Bomb)))
             autoShooting = false;
 
-        g_autoShooting = autoShooting;
-        if (autoShooting)
+        g_keyboard.autoShooting = autoShooting;
+        if (autoShooting && !escapeDown)
             actions |= kShootAction;
     }
+
+    if (escapeDown)
+        g_keyboard.autoShooting = false;
 
     // Remove only live gameplay's logical Bomb bit. Menu use of the physical
     // key is untouched, and replay playback retains recorded Bomb input.
@@ -420,7 +428,7 @@ bool InstallKeyboardDetour(void* target)
 
     auto* block = static_cast<unsigned char*>(AllocateNearAddress(target, 64));
     if (!block) {
-        g_keyboardHookStatus = KeyboardHookStatusValue::AllocationFailed;
+        g_keyboard.hookStatus = KeyboardHookStatusValue::AllocationFailed;
         return false;
     }
 
@@ -454,7 +462,8 @@ bool InstallKeyboardDetour(void* target)
     }
 
     // Publish the callable original before the detour can be reached.
-    g_originalKeyboardUpdate = reinterpret_cast<KeyboardUpdateFn>(trampoline);
+    g_keyboard.originalKeyboardUpdate =
+        reinterpret_cast<KeyboardUpdateFn>(trampoline);
     targetBytes[0] = 0xE9;
     *reinterpret_cast<int32_t*>(targetBytes + 1) = static_cast<int32_t>(relative);
     FlushInstructionCache(GetCurrentProcess(), targetBytes, kKeyboardUpdatePrologueSize);
@@ -472,7 +481,7 @@ bool InstallActionInputDetour(void* target)
 
     auto* block = static_cast<unsigned char*>(AllocateNearAddress(target, 64));
     if (!block) {
-        g_keyboardHookStatus = KeyboardHookStatusValue::AllocationFailed;
+        g_keyboard.hookStatus = KeyboardHookStatusValue::AllocationFailed;
         return false;
     }
 
@@ -505,7 +514,7 @@ bool InstallActionInputDetour(void* target)
         return false;
     }
 
-    g_originalActionInputUpdate =
+    g_keyboard.originalActionInputUpdate =
         reinterpret_cast<ActionInputUpdateFn>(trampoline);
     targetBytes[0] = 0xE9;
     *reinterpret_cast<int32_t*>(targetBytes + 1) = static_cast<int32_t>(relative);
@@ -526,7 +535,7 @@ bool InstallKeyboardActionMergeDetour(void* target)
 
     auto* block = static_cast<unsigned char*>(AllocateNearAddress(target, 64));
     if (!block) {
-        g_keyboardHookStatus = KeyboardHookStatusValue::AllocationFailed;
+        g_keyboard.hookStatus = KeyboardHookStatusValue::AllocationFailed;
         return false;
     }
     unsigned char* relay = block;
@@ -555,7 +564,7 @@ bool InstallKeyboardActionMergeDetour(void* target)
         VirtualFree(block, 0, MEM_RELEASE);
         return false;
     }
-    g_originalKeyboardActionMerge =
+    g_keyboard.originalKeyboardActionMerge =
         reinterpret_cast<KeyboardActionMergeFn>(trampoline);
     targetBytes[0] = 0xE9;
     *reinterpret_cast<int32_t*>(targetBytes + 1) =
@@ -745,17 +754,17 @@ bool IsGameProcessForeground()
 bool InstallKeyboardInputHook()
 {
     LoadInputConfig();
-    if (g_keyboardHookStatus == KeyboardHookStatusValue::Installed)
+    if (g_keyboard.hookStatus == KeyboardHookStatusValue::Installed)
         return true;
 
     auto* base = GameModuleBase();
     if (!base) {
-        g_keyboardHookStatus = (KeyboardHookStatusValue::UnsupportedExecutable);
+        g_keyboard.hookStatus = KeyboardHookStatusValue::UnsupportedExecutable;
         return false;
     }
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-        g_keyboardHookStatus = (KeyboardHookStatusValue::UnsupportedExecutable);
+        g_keyboard.hookStatus = KeyboardHookStatusValue::UnsupportedExecutable;
         return false;
     }
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
@@ -771,9 +780,9 @@ bool InstallKeyboardInputHook()
         GameRva(GameAddress::KeyboardActionMerge) +
                 kKeyboardActionMergePrologueSize >
             nt->OptionalHeader.SizeOfImage ||
-        GameRva(GameAddress::ReplayPlaybackFlag) + sizeof(uint8_t) >
+        GameRva(GameAddress::ReplayModeFlag) + sizeof(uint8_t) >
             nt->OptionalHeader.SizeOfImage) {
-        g_keyboardHookStatus = (KeyboardHookStatusValue::UnsupportedExecutable);
+        g_keyboard.hookStatus = KeyboardHookStatusValue::UnsupportedExecutable;
         return false;
     }
 
@@ -786,35 +795,35 @@ bool InstallKeyboardInputHook()
             kActionInputUpdatePrologueSize) != 0 ||
         std::memcmp(mergeTarget, kExpectedKeyboardActionMergePrologue,
             kKeyboardActionMergePrologueSize) != 0) {
-        g_keyboardHookStatus = (KeyboardHookStatusValue::UnsupportedExecutable);
+        g_keyboard.hookStatus = KeyboardHookStatusValue::UnsupportedExecutable;
         return false;
     }
 
-    g_moduleBase = base;
+    g_keyboard.moduleBase = base;
     if (!InstallKeyboardDetour(target)) {
-        if (g_keyboardHookStatus != KeyboardHookStatusValue::AllocationFailed)
-            g_keyboardHookStatus = (KeyboardHookStatusValue::PatchFailed);
-        g_moduleBase = nullptr;
+        if (g_keyboard.hookStatus != KeyboardHookStatusValue::AllocationFailed)
+            g_keyboard.hookStatus = KeyboardHookStatusValue::PatchFailed;
+        g_keyboard.moduleBase = nullptr;
         return false;
     }
     if (!InstallActionInputDetour(actionTarget)) {
-        if (g_keyboardHookStatus != KeyboardHookStatusValue::AllocationFailed)
-            g_keyboardHookStatus = (KeyboardHookStatusValue::PatchFailed);
+        if (g_keyboard.hookStatus != KeyboardHookStatusValue::AllocationFailed)
+            g_keyboard.hookStatus = KeyboardHookStatusValue::PatchFailed;
         return false;
     }
     if (!InstallKeyboardActionMergeDetour(mergeTarget)) {
-        if (g_keyboardHookStatus != KeyboardHookStatusValue::AllocationFailed)
-            g_keyboardHookStatus = (KeyboardHookStatusValue::PatchFailed);
+        if (g_keyboard.hookStatus != KeyboardHookStatusValue::AllocationFailed)
+            g_keyboard.hookStatus = KeyboardHookStatusValue::PatchFailed;
         return false;
     }
 
-    g_keyboardHookStatus = (KeyboardHookStatusValue::Installed);
+    g_keyboard.hookStatus = KeyboardHookStatusValue::Installed;
     return true;
 }
 
 const char* KeyboardInputHookStatus()
 {
-    switch (g_keyboardHookStatus ) {
+    switch (g_keyboard.hookStatus) {
     case KeyboardHookStatusValue::Installed: return S(StatusForegroundOnly);
     case KeyboardHookStatusValue::UnsupportedExecutable:
         return S(StatusUnsupportedExecutable);
@@ -827,26 +836,26 @@ const char* KeyboardInputHookStatus()
 
 bool IsAutoShootEnabled()
 {
-    return g_autoShootEnabled ;
+    return g_keyboard.autoShootEnabled;
 }
 
 void SetAutoShootEnabled(bool enabled)
 {
     LoadInputConfig();
-    g_autoShootEnabled = (enabled);
+    g_keyboard.autoShootEnabled = enabled;
     if (!enabled)
-        g_autoShooting = (false);
+        g_keyboard.autoShooting = false;
     SaveInputConfig();
 }
 
 bool IsAutoShooting()
 {
-    return g_autoShootEnabled  && g_autoShooting ;
+    return g_keyboard.autoShootEnabled && g_keyboard.autoShooting;
 }
 
 bool IsKeyBindingCaptureActive()
 {
-    return g_capturingBinding >= 0;
+    return g_keyboard.capturingBinding >= 0;
 }
 
 bool IsRetryKeyPressed()
@@ -878,18 +887,18 @@ void DrawKeyBindingUi()
     const char* socdItems[] = {
         S(SocdNone), S(SocdLastInput), S(SocdFirstInput), S(SocdNeutral),
     };
-    int socd = static_cast<int>(g_socdMode );
+    int socd = static_cast<int>(g_keyboard.socdMode);
     ImGui::SetNextItemWidth(300.0f);
     if (ImGui::Combo(S(SocdMode), &socd, socdItems,
             static_cast<int>(_countof(socdItems)))) {
-        g_socdMode = (static_cast<SocdMode>(socd));
+        g_keyboard.socdMode = static_cast<SocdMode>(socd);
         SaveInputConfig();
     }
 
     const auto applyPreset = [&](const int* preset) {
         for (size_t i = 0; i < kNativeBindableActionCount; ++i)
-            g_keyBindings[i] = (preset[i]);
-        g_capturingBinding = -1;
+            g_keyboard.bindings[i] = preset[i];
+        g_keyboard.capturingBinding = -1;
         SaveInputConfig();
     };
     if (ImGui::Button(S(ArrowKeyPreset)))
@@ -898,7 +907,7 @@ void DrawKeyBindingUi()
     if (ImGui::Button(S(WasdKeyPreset)))
         applyPreset(kWasdKeyPreset);
 
-    const int capturing = g_capturingBinding;
+    const int capturing = g_keyboard.capturingBinding;
     if (capturing >= 0) {
         for (const KeyChoice& choice : keys) {
             const bool down =
@@ -910,15 +919,17 @@ void DrawKeyBindingUi()
                 bool is_dul = false;
                 for (int i = 0; i < kBindableActionCount;i++) {
                     if (i == capturing)continue;
-                    if (g_keyBindings[i] == NormalizeBindingKey(choice.virtualKey)) {
+                    if (g_keyboard.bindings[i] ==
+                        NormalizeBindingKey(choice.virtualKey)) {
                         is_dul = true; 
                         break;
                     }
                 }
                 if (!is_dul)
                 {
-                    g_keyBindings[capturing] = NormalizeBindingKey(choice.virtualKey);
-                    g_capturingBinding = -1;
+                    g_keyboard.bindings[capturing] =
+                        NormalizeBindingKey(choice.virtualKey);
+                    g_keyboard.capturingBinding = -1;
                     SaveInputConfig();
                     break;
                 }
@@ -928,7 +939,7 @@ void DrawKeyBindingUi()
 
     for (size_t action = 0; action < kBindableActionCount; ++action) {
         ImGui::PushID(static_cast<int>(action));
-        const int currentKey = g_keyBindings[action];
+        const int currentKey = g_keyboard.bindings[action];
         const std::string currentName = KeyName(currentKey);
         ImGui::Text("%s", Locale::Instance().Get(labels[action]));
         ImGui::SameLine(400.0f);
@@ -939,7 +950,8 @@ void DrawKeyBindingUi()
             for (const KeyChoice& choice : keys) {
                 const bool selected = choice.virtualKey == currentKey;
                 if (ImGui::Selectable(choice.name.c_str(), selected)) {
-                    g_keyBindings[action] = NormalizeBindingKey(choice.virtualKey);
+                    g_keyboard.bindings[action] =
+                        NormalizeBindingKey(choice.virtualKey);
                     SaveInputConfig();
                 }
                 if (selected)
@@ -949,12 +961,12 @@ void DrawKeyBindingUi()
         }
         ImGui::SameLine();
         const bool thisCapture =
-            g_capturingBinding == static_cast<int>(action);
+            g_keyboard.capturingBinding == static_cast<int>(action);
         if (ImGui::Button(thisCapture ? S(PressAKey) : S(ChooseKey))) {
             if (thisCapture) {
-                g_capturingBinding = -1;
+                g_keyboard.capturingBinding = -1;
             } else {
-                g_capturingBinding = static_cast<int>(action);
+                g_keyboard.capturingBinding = static_cast<int>(action);
                 captureKeyWasDown.fill(false);
                 for (const KeyChoice& choice : keys) {
                     captureKeyWasDown[choice.virtualKey] =

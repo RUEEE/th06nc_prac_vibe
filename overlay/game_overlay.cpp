@@ -58,18 +58,23 @@ constexpr unsigned char kExpectedAutoBombInputCheck[kAutoBombInputCheckSize] = {
     0x44, 0x8B, 0x1D, 0x6C, 0x62, 0xA0, 0x00, // mov r11d,[MenuInputCurrent]
 };
 
-bool g_windowVisible = false;
-bool g_invincible = false;
-bool g_lockLives = false;
-bool g_lockBombs = false;
-bool g_lockPower = false;
-bool g_lockTime = false;
-bool g_autoBomb = false;
-bool g_everlastingBgm = false;
-bool g_noBomb = false;
-bool g_patchError = false;
-void* g_autoBombRelay = nullptr;
-void* g_enemyUpdateTrampoline = nullptr;
+struct AuxiliaryRuntime {
+    bool windowVisible = false;
+    bool invincible = false;
+    bool lockLives = false;
+    bool lockBombs = false;
+    bool lockPower = false;
+    bool lockTime = false;
+    bool autoBomb = false;
+    bool everlastingBgm = false;
+    bool noBomb = false;
+    bool patchError = false;
+    void* autoBombRelay = nullptr;
+    void* enemyUpdateTrampoline = nullptr;
+    void* hudDrawTrampoline = nullptr;
+};
+
+AuxiliaryRuntime g_auxiliary{};
 
 template <size_t Size>
 bool SiteHasBytes(const PatchSite<Size>& site,
@@ -129,7 +134,7 @@ void ToggleRequested(bool& setting, bool requested,
     if (apply(desired))
         setting = desired;
     else
-        g_patchError = true;
+        g_auxiliary.patchError = true;
 }
 
 bool ApplyLives(bool enabled)
@@ -161,7 +166,8 @@ using EnemyUpdateFn = int64_t(__fastcall*)(void*);
 
 int64_t __fastcall HookedEnemyUpdate(void* enemyManager)
 {
-    auto original = reinterpret_cast<EnemyUpdateFn>(g_enemyUpdateTrampoline);
+    auto original = reinterpret_cast<EnemyUpdateFn>(
+        g_auxiliary.enemyUpdateTrampoline);
     if (!original || !enemyManager)
         return original ? original(enemyManager) : 0;
 
@@ -173,7 +179,7 @@ int64_t __fastcall HookedEnemyUpdate(void* enemyManager)
     std::array<int, kEnemyCount> timers{};
     auto* base = static_cast<std::byte*>(enemyManager);
     auto* timeline = ResolveGameAddress<int>(GameAddress::TimelineFrame);
-    const bool locked = g_lockTime && timeline &&
+    const bool locked = g_auxiliary.lockTime && timeline &&
         IsEnhancedPracticeRunActive();
     const int timelineBefore = locked ? *timeline : 0;
     if (locked) {
@@ -288,7 +294,7 @@ void WriteAbsoluteJump(unsigned char* destination, const void* target)
 
 bool InstallEnemyUpdateHook()
 {
-    if (g_enemyUpdateTrampoline)
+    if (g_auxiliary.enemyUpdateTrampoline)
         return true;
 
     constexpr std::array<unsigned char, 15> expected{
@@ -321,9 +327,132 @@ bool InstallEnemyUpdateHook()
         VirtualFree(trampoline, 0, MEM_RELEASE);
         return false;
     }
-    g_enemyUpdateTrampoline = trampoline;
+    g_auxiliary.enemyUpdateTrampoline = trampoline;
     WriteAbsoluteJump(target, reinterpret_cast<void*>(HookedEnemyUpdate));
     target[14] = 0x90;
+    FlushInstructionCache(GetCurrentProcess(), target, expected.size());
+    DWORD ignored = 0;
+    VirtualProtect(target, expected.size(), targetProtection, &ignored);
+    return true;
+}
+
+using HudDrawFn = void(__fastcall*)(void*);
+using AsciiPrintfFn = void(__fastcall*)(void*, const void*, const char*, ...);
+
+struct NativeFloat3 {
+    float x;
+    float y;
+    float z;
+};
+
+struct NativeAsciiState {
+    float scaleX;
+    float scaleY;
+    std::byte reserved[0x52C0];
+    uint8_t projectionMode;
+    uint8_t alternateGlyphs;
+    uint8_t padding[2];
+    uint32_t color;
+};
+
+static_assert(offsetof(NativeAsciiState, color) == 0x52CC);
+
+void DrawNativePracticeCounters(void* hud)
+{
+    auto asciiPrintf = reinterpret_cast<AsciiPrintfFn>(
+        ResolveGameAddress<void>(GameAddress::AsciiPrintf));
+    auto* asciiState = ResolveGameAddress<NativeAsciiState>(
+        GameAddress::AsciiManager);
+    const auto* misses = ResolveGameAddress<int32_t>(GameAddress::MissCount);
+    const auto* bombsUsed = ResolveGameAddress<int32_t>(
+        GameAddress::BombUseCount);
+    const auto* infiniteLives = ResolveGameAddress<uint8_t>(
+        GameAddress::InfiniteLivesModeFlag);
+    if (!hud || !asciiPrintf || !asciiState || !misses ||
+        !bombsUsed || !infiniteLives)
+        return;
+
+    // These are the stock replay-counter coordinates. The native life icons
+    // use y=118 and Bomb icons use y=142, while their text is offset upward by
+    // one pixel. The native infinite-lives mode hides miss usage, while Bomb
+    // usage remains useful. F2 Lock Lives is a separate helper and must not
+    // change counter visibility.
+
+    constexpr NativeFloat3 missPosition{ 824.0f, 117.0f, 0.49f };
+    constexpr NativeFloat3 bombPosition{ 824.0f, 141.0f, 0.49f };
+    constexpr float kCounterScale = 1.0f;
+    constexpr uint32_t kMissColor = 0xFFFF8080; // native ARGB: light red
+    constexpr uint32_t kBombColor = 0xFF80FF80; // native ARGB: light green
+    const float previousScaleX = asciiState->scaleX;
+    const float previousScaleY = asciiState->scaleY;
+    const uint32_t previousColor = asciiState->color;
+    asciiState->scaleX *= kCounterScale;
+    asciiState->scaleY *= kCounterScale;
+    // The stock HUD already draws misses when the native infinite-lives flag
+    // is set, so only add the missing counter in ordinary finite-lives mode.
+    if (*infiniteLives == 0) {
+        asciiState->color = kMissColor;
+        asciiPrintf(asciiState,&missPosition, "%d", std::clamp(*misses,0,99));
+    }
+    asciiState->color = kBombColor;
+    asciiPrintf(asciiState, &bombPosition, "%d", std::clamp(*bombsUsed,0,99));
+    asciiState->scaleX = previousScaleX;
+    asciiState->scaleY = previousScaleY;
+    asciiState->color = previousColor;
+}
+
+void __fastcall HookedHudDraw(void* hud)
+{
+    const auto original = reinterpret_cast<HudDrawFn>(
+        g_auxiliary.hudDrawTrampoline);
+    if (original)
+        original(hud);
+    DrawNativePracticeCounters(hud);
+}
+
+bool InstallHudDrawHook()
+{
+    if (g_auxiliary.hudDrawTrampoline)
+        return true;
+
+    constexpr std::array<unsigned char, 19> expected{
+        0x4C, 0x8B, 0xDC,                         // mov r11,rsp
+        0x55, 0x53,                               // push rbp / push rbx
+        0x49, 0x8D, 0xAB, 0x48, 0xFC, 0xFF, 0xFF,// lea rbp,[r11-3b8h]
+        0x48, 0x81, 0xEC, 0xA8, 0x04, 0x00, 0x00 // sub rsp,4a8h
+    };
+    auto* target = ResolveGameAddress<unsigned char>(GameAddress::HudDraw);
+    if (!target || !IsGameAddressRangeValid(GameAddress::HudDraw,
+            expected.size()) ||
+        std::memcmp(target, expected.data(), expected.size()) != 0)
+        return false;
+
+    constexpr size_t kJumpSize = 14;
+    constexpr size_t kTrampolineSize = expected.size() + kJumpSize;
+    auto* trampoline = static_cast<unsigned char*>(VirtualAlloc(nullptr,
+        kTrampolineSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    if (!trampoline)
+        return false;
+    std::memcpy(trampoline, target, expected.size());
+    WriteAbsoluteJump(trampoline + expected.size(), target + expected.size());
+
+    DWORD trampolineProtection = 0;
+    if (!VirtualProtect(trampoline, kTrampolineSize, PAGE_EXECUTE_READ,
+            &trampolineProtection)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return false;
+    }
+
+    DWORD targetProtection = 0;
+    if (!VirtualProtect(target, expected.size(), PAGE_EXECUTE_READWRITE,
+            &targetProtection)) {
+        VirtualFree(trampoline, 0, MEM_RELEASE);
+        return false;
+    }
+    g_auxiliary.hudDrawTrampoline = trampoline;
+    WriteAbsoluteJump(target, reinterpret_cast<void*>(HookedHudDraw));
+    std::fill(target + kJumpSize, target + expected.size(),
+        static_cast<unsigned char>(0x90));
     FlushInstructionCache(GetCurrentProcess(), target, expected.size());
     DWORD ignored = 0;
     VirtualProtect(target, expected.size(), targetProtection, &ignored);
@@ -335,11 +464,11 @@ bool InstallEnemyUpdateHook()
 bool InstallGameOverlayHook()
 {
     const bool enemyInstalled = InstallEnemyUpdateHook();
-    if (g_autoBombRelay)
-        return enemyInstalled;
-
-    if (!enemyInstalled)
-        g_patchError = true;
+    const bool hudInstalled = InstallHudDrawHook();
+    if (!enemyInstalled || !hudInstalled)
+        g_auxiliary.patchError = true;
+    if (g_auxiliary.autoBombRelay)
+        return enemyInstalled && hudInstalled;
 
     auto* target = ResolveGameAddress<unsigned char>(
         GameAddress::AutoBombInputCheck);
@@ -350,10 +479,10 @@ bool InstallGameOverlayHook()
     auto* actions = ResolveGameAddress<uint32_t>(GameAddress::MenuInputCurrent);
     auto* playerState = ResolveGameAddress<uint8_t>(
         GameAddress::CurrentPlayerState);
-    auto* replayPlayback = ResolveGameAddress<uint8_t>(
-        GameAddress::ReplayPlaybackFlag);
+    auto* replayMode = ResolveGameAddress<uint8_t>(
+        GameAddress::ReplayModeFlag);
     if (!target || !continuation || !deathBomb || !actions || !playerState ||
-        !replayPlayback ||
+        !replayMode ||
         !IsGameAddressRangeValid(GameAddress::AutoBombInputCheck,
             kAutoBombInputCheckSize) ||
         std::memcmp(target, kExpectedAutoBombInputCheck,
@@ -399,9 +528,9 @@ bool InstallGameOverlayHook()
         emitByte(branchWhenNonzero ? 0x75 : 0x74);
         originalBranchDisplacements[branchCount++] = cursor++;
     };
-    emitFlagCheck(&g_autoBomb, false);
-    emitFlagCheck(&g_noBomb, true);
-    emitFlagCheck(replayPlayback, true);
+    emitFlagCheck(&g_auxiliary.autoBomb, false);
+    emitFlagCheck(&g_auxiliary.noBomb, true);
+    emitFlagCheck(replayMode, true);
     emitBytes({0x48, 0xB8});                 // mov rax, playerState
     emitPointer(playerState);
     emitBytes({0x80, 0x38, 0x02, 0x75});     // cmp byte ptr [rax], 2 / jne stock
@@ -450,8 +579,8 @@ bool InstallGameOverlayHook()
     FlushInstructionCache(GetCurrentProcess(), target, kAutoBombInputCheckSize);
     DWORD ignored = 0;
     VirtualProtect(target, kAutoBombInputCheckSize, oldProtection, &ignored);
-    g_autoBombRelay = relay;
-    return enemyInstalled;
+    g_auxiliary.autoBombRelay = relay;
+    return enemyInstalled && hudInstalled;
 }
 
 void UpdateGameOverlayState()
@@ -467,39 +596,39 @@ void UpdateGameOverlayState()
             GetAsyncKeyState(key);
     }
     if (hotkeysEnabled && (GetAsyncKeyState(VK_BACK) & 1))
-        g_windowVisible = !g_windowVisible;
+        g_auxiliary.windowVisible = !g_auxiliary.windowVisible;
 
-    ToggleRequested(g_invincible,
+    ToggleRequested(g_auxiliary.invincible,
         hotkeysEnabled && (GetAsyncKeyState(VK_F1) & 1), ApplyInvincible);
     if (hotkeysEnabled && (GetAsyncKeyState(VK_F2) & 1))
-        g_lockLives = !g_lockLives;
-    ToggleRequested(g_lockBombs,
+        g_auxiliary.lockLives = !g_auxiliary.lockLives;
+    ToggleRequested(g_auxiliary.lockBombs,
         hotkeysEnabled && (GetAsyncKeyState(VK_F3) & 1), ApplyBombs);
-    ToggleRequested(g_lockPower,
+    ToggleRequested(g_auxiliary.lockPower,
         hotkeysEnabled && (GetAsyncKeyState(VK_F4) & 1), ApplyPower);
     if (hotkeysEnabled && (GetAsyncKeyState(VK_F5) & 1))
-        g_lockTime = !g_lockTime;
+        g_auxiliary.lockTime = !g_auxiliary.lockTime;
     if (hotkeysEnabled && (GetAsyncKeyState(VK_F6) & 1))
-        g_autoBomb = !g_autoBomb;
+        g_auxiliary.autoBomb = !g_auxiliary.autoBomb;
     if (hotkeysEnabled && (GetAsyncKeyState(VK_F7) & 1))
-        g_everlastingBgm = !g_everlastingBgm;
+        g_auxiliary.everlastingBgm = !g_auxiliary.everlastingBgm;
     if (hotkeysEnabled && (GetAsyncKeyState(VK_F8) & 1))
-        g_noBomb = !g_noBomb;
+        g_auxiliary.noBomb = !g_auxiliary.noBomb;
 
     // Match thprac's "lock lives / no continue" mode: retain the stock death
     // and life-decrement path while any lives remain, and intervene only once
     // the counter is already zero and the next death would cause game over.
     const auto* lives = ResolveGameAddress<uint8_t>(GameAddress::CurrentLives);
-    const bool livesPatchWanted = g_lockLives && lives && *lives == 0;
+    const bool livesPatchWanted = g_auxiliary.lockLives && lives && *lives == 0;
     if (!ApplyLives(livesPatchWanted))
-        g_patchError = true;
+        g_auxiliary.patchError = true;
 }
 
 void UpdateAndDrawGameOverlayUi()
 {
     DrawAutoShootIndicator();
 
-    if (!g_windowVisible)
+    if (!g_auxiliary.windowVisible)
         return;
 
     ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f),
@@ -517,15 +646,15 @@ void UpdateAndDrawGameOverlayUi()
             else
                 ImGui::TextUnformatted(label);
         };
-        drawState(g_invincible, S(Invincible));
-        drawState(g_lockLives, S(LockLives));
-        drawState(g_lockBombs, S(LockBombs));
-        drawState(g_lockPower, S(LockPower));
-        drawState(g_lockTime, S(LockTime));
-        drawState(g_autoBomb, S(AutoBomb));
-        drawState(g_everlastingBgm, S(EverlastingBgm));
-        drawState(g_noBomb, S(DisableBomb));
-        if (g_patchError)
+        drawState(g_auxiliary.invincible, S(Invincible));
+        drawState(g_auxiliary.lockLives, S(LockLives));
+        drawState(g_auxiliary.lockBombs, S(LockBombs));
+        drawState(g_auxiliary.lockPower, S(LockPower));
+        drawState(g_auxiliary.lockTime, S(LockTime));
+        drawState(g_auxiliary.autoBomb, S(AutoBomb));
+        drawState(g_auxiliary.everlastingBgm, S(EverlastingBgm));
+        drawState(g_auxiliary.noBomb, S(DisableBomb));
+        if (g_auxiliary.patchError)
             ImGui::TextDisabled("%s", S(PatchUnsupported));
     }
     ImGui::End();
@@ -533,17 +662,22 @@ void UpdateAndDrawGameOverlayUi()
 
 bool IsGameOverlayVisible()
 {
-    return g_windowVisible;
+    return g_auxiliary.windowVisible;
 }
 
 bool IsBombInputSuppressed()
 {
-    return g_noBomb;
+    return g_auxiliary.noBomb;
+}
+
+bool IsEverlastingBgmEnabled()
+{
+    return g_auxiliary.everlastingBgm;
 }
 
 void PrepareEverlastingBgmForInitialization(bool enhancedRetry)
 {
     if (auto* keepBgm = ResolveGameAddress<uint8_t>(GameAddress::KeepBgm))
         *keepBgm = static_cast<uint8_t>(
-            enhancedRetry && g_everlastingBgm);
+            enhancedRetry && g_auxiliary.everlastingBgm);
 }

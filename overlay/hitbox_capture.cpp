@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -90,34 +91,45 @@ using LaserCollisionFn = int(__fastcall*)(void* context, const Float2* center,
 using BulletUpdateFn = int(__fastcall*)(void* bulletManager);
 using StageDrawFn = int(__fastcall*)(void* stage);
 
-CollisionFn g_originalCollision = nullptr;
-LaserCollisionFn g_originalLaserCollision = nullptr;
-BulletUpdateFn g_originalBulletUpdate = nullptr;
-StageDrawFn g_originalStageDrawHigh = nullptr;
-StageDrawFn g_originalStageDrawLow = nullptr;
-void* g_bulletManager = nullptr;
-bool g_poolHookInstalled = false;
-CaptureStatus g_status = CaptureStatus::NotInstalled;
-BackgroundStatus g_backgroundStatus = BackgroundStatus::NotInstalled;
-bool g_disableStageBackground = false;
-std::vector<Hitbox> g_pendingHitboxes;
-std::vector<Hitbox> g_renderHitboxes;
+struct HitboxHooks {
+    CollisionFn originalCollision = nullptr;
+    LaserCollisionFn originalLaserCollision = nullptr;
+    BulletUpdateFn originalBulletUpdate = nullptr;
+    StageDrawFn originalStageDrawHigh = nullptr;
+    StageDrawFn originalStageDrawLow = nullptr;
+    void* bulletManager = nullptr;
+    bool poolHookInstalled = false;
+    CaptureStatus status = CaptureStatus::NotInstalled;
+    BackgroundStatus backgroundStatus = BackgroundStatus::NotInstalled;
+};
 
-bool g_showHitboxes = false;
-bool g_squareHitboxes = false;
-bool g_fillHitboxes = true;
-bool g_showCenters = false;
-bool g_showSizeLabels = false;
-bool g_flipY = false;
-float g_stageOriginX = 128.0f;
-float g_stageOriginY = 16.0f;
-float g_pixelOffsetX = 4.0f;
-float g_pixelOffsetY = 0.0f;
-float g_scaleMultiplier = 1.0f;
-float g_lineThickness = 1.5f;
-int g_shapeDisplayMode = 0;
-float g_hitboxColor[4] = {1.0f, 0.25f, 0.25f, 0.96f};
-bool g_hitboxConfigLoaded = false;
+struct HitboxSettings {
+    bool show = false;
+    bool square = false;
+    bool fill = true;
+    bool showCenters = false;
+    bool showSizeLabels = false;
+    bool flipY = false;
+    bool disableStageBackground = false;
+    float stageOriginX = 128.0f;
+    float stageOriginY = 16.0f;
+    float pixelOffsetX = 4.0f;
+    float pixelOffsetY = 0.0f;
+    float scaleMultiplier = 1.0f;
+    float lineThickness = 1.5f;
+    int shapeDisplayMode = 0;
+    std::array<float, 4> color{1.0f, 0.25f, 0.25f, 0.96f};
+    bool configLoaded = false;
+};
+
+struct HitboxRuntime {
+    HitboxHooks hooks{};
+    HitboxSettings settings{};
+    std::vector<Hitbox> pending{};
+    std::vector<Hitbox> render{};
+};
+
+HitboxRuntime g_hitbox{};
 
 std::wstring HitboxConfigPath()
 {
@@ -160,34 +172,34 @@ void SaveHitboxConfig()
     const std::wstring path = HitboxConfigPath();
     if (path.empty())
         return;
-    WriteConfigFloat(path, L"OffsetX", g_pixelOffsetX);
-    WriteConfigFloat(path, L"OffsetY", g_pixelOffsetY);
-    WriteConfigFloat(path, L"Scale", g_scaleMultiplier);
-    WriteConfigFloat(path, L"ColorR", g_hitboxColor[0]);
-    WriteConfigFloat(path, L"ColorG", g_hitboxColor[1]);
-    WriteConfigFloat(path, L"ColorB", g_hitboxColor[2]);
-    WriteConfigFloat(path, L"ColorA", g_hitboxColor[3]);
+    WriteConfigFloat(path, L"OffsetX", g_hitbox.settings.pixelOffsetX);
+    WriteConfigFloat(path, L"OffsetY", g_hitbox.settings.pixelOffsetY);
+    WriteConfigFloat(path, L"Scale", g_hitbox.settings.scaleMultiplier);
+    WriteConfigFloat(path, L"ColorR", g_hitbox.settings.color[0]);
+    WriteConfigFloat(path, L"ColorG", g_hitbox.settings.color[1]);
+    WriteConfigFloat(path, L"ColorB", g_hitbox.settings.color[2]);
+    WriteConfigFloat(path, L"ColorA", g_hitbox.settings.color[3]);
 }
 
 void LoadHitboxConfig()
 {
-    if (g_hitboxConfigLoaded)
+    if (g_hitbox.settings.configLoaded)
         return;
-    g_hitboxConfigLoaded = true;
+    g_hitbox.settings.configLoaded = true;
     const std::wstring path = HitboxConfigPath();
     if (path.empty())
         return;
-    g_pixelOffsetX = std::clamp(
+    g_hitbox.settings.pixelOffsetX = std::clamp(
         ReadConfigFloat(path, L"OffsetX", 4.0f), -1000.0f, 1000.0f);
-    g_pixelOffsetY = std::clamp(
+    g_hitbox.settings.pixelOffsetY = std::clamp(
         ReadConfigFloat(path, L"OffsetY", 0.0f), -1000.0f, 1000.0f);
-    g_scaleMultiplier = std::clamp(
+    g_hitbox.settings.scaleMultiplier = std::clamp(
         ReadConfigFloat(path, L"Scale", 1.0f), 0.1f, 5.0f);
     constexpr float defaults[4] = {1.0f, 0.25f, 0.25f, 0.90f};
     constexpr const wchar_t* keys[4] = {
         L"ColorR", L"ColorG", L"ColorB", L"ColorA"};
     for (size_t i = 0; i < 4; ++i)
-        g_hitboxColor[i] = std::clamp(
+        g_hitbox.settings.color[i] = std::clamp(
             ReadConfigFloat(path, keys[i], defaults[i]), 0.0f, 1.0f);
     SaveHitboxConfig();
 }
@@ -253,10 +265,10 @@ int __fastcall CaptureCollision(void* playerContext, const Float2* position,
 
     // The standard circular bullets are read from the complete pool at Present.
     // Keep this hook for rectangular/laser checks and as a fallback on game updates.
-    if (valid && g_showHitboxes && IsPracticeRunActive() &&
-        (!circular || !g_poolHookInstalled)) {
-        if (g_pendingHitboxes.size() < g_pendingHitboxes.capacity())
-            g_pendingHitboxes.push_back(hitbox);
+    if (valid && g_hitbox.settings.show && IsPracticeRunActive() &&
+        (!circular || !g_hitbox.hooks.poolHookInstalled)) {
+        if (g_hitbox.pending.size() < g_hitbox.pending.capacity())
+            g_hitbox.pending.push_back(hitbox);
     }
 
     // Square mode changes only the player-versus-axis-aligned-shape test.
@@ -268,7 +280,7 @@ int __fastcall CaptureCollision(void* playerContext, const Float2* position,
         ? reinterpret_cast<float*>(static_cast<std::byte*>(playerContext) +
               GameField(GameObjectField::PlayerCollisionRadius))
         : nullptr;
-    if (g_squareHitboxes && playerRadius &&
+    if (g_hitbox.settings.square && playerRadius &&
         std::isfinite(*playerRadius) && *playerRadius >= 0.0f) {
         const auto* playerPosition = reinterpret_cast<const Float2*>(
             static_cast<const std::byte*>(playerContext) +
@@ -304,7 +316,7 @@ int __fastcall CaptureCollision(void* playerContext, const Float2* position,
                 if (requiredRadius >= originalRadius)
                     *playerRadius = std::nextafter(requiredRadius,
                         std::numeric_limits<float>::infinity());
-                const int result = g_originalCollision(
+                const int result = g_hitbox.hooks.originalCollision(
                     playerContext, position, size, circular);
                 *playerRadius = originalRadius;
                 return result;
@@ -312,7 +324,8 @@ int __fastcall CaptureCollision(void* playerContext, const Float2* position,
         }
     }
 
-    return g_originalCollision(playerContext, position, size, circular);
+    return g_hitbox.hooks.originalCollision(
+        playerContext, position, size, circular);
 }
 
 int __fastcall CaptureLaserCollision(void* context, const Float2* center,
@@ -320,7 +333,7 @@ int __fastcall CaptureLaserCollision(void* context, const Float2* center,
     bool enableGraze)
 {
     if (center && size && rotationPivot &&
-        g_showHitboxes &&
+        g_hitbox.settings.show &&
         IsPracticeRunActive()) {
         Hitbox hitbox{};
         hitbox.position = *center;
@@ -329,34 +342,34 @@ int __fastcall CaptureLaserCollision(void* context, const Float2* center,
         hitbox.rotation = rotation;
         hitbox.rotated = true;
         if (IsFiniteHitbox(hitbox)) {
-            if (g_pendingHitboxes.size() < g_pendingHitboxes.capacity())
-                g_pendingHitboxes.push_back(hitbox);
+            if (g_hitbox.pending.size() < g_hitbox.pending.capacity())
+                g_hitbox.pending.push_back(hitbox);
         }
     }
-    return g_originalLaserCollision(context, center, size, rotationPivot,
+    return g_hitbox.hooks.originalLaserCollision(context, center, size, rotationPivot,
         rotation, enableGraze);
 }
 
 int __fastcall CaptureBulletManager(void* bulletManager)
 {
-    g_bulletManager = bulletManager;
-    return g_originalBulletUpdate(bulletManager);
+    g_hitbox.hooks.bulletManager = bulletManager;
+    return g_hitbox.hooks.originalBulletUpdate(bulletManager);
 }
 
 int __fastcall FilterStageDrawHigh(void* stage)
 {
-    if (g_disableStageBackground) {
+    if (g_hitbox.settings.disableStageBackground) {
         ClearStagePlayfieldBlack();
         return 1;
     }
-    return g_originalStageDrawHigh(stage);
+    return g_hitbox.hooks.originalStageDrawHigh(stage);
 }
 
 int __fastcall FilterStageDrawLow(void* stage)
 {
-    if (g_disableStageBackground)
+    if (g_hitbox.settings.disableStageBackground)
         return 1;
-    return g_originalStageDrawLow(stage);
+    return g_hitbox.hooks.originalStageDrawLow(stage);
 }
 
 void* AllocateNearAddress(void* target, size_t size)
@@ -415,7 +428,7 @@ bool InstallKnownPrologueDetour(void* target, void* replacement, void** original
 
     auto* block = static_cast<unsigned char*>(AllocateNearAddress(target, 64));
     if (!block) {
-        g_status = CaptureStatus::AllocationFailed;
+        g_hitbox.hooks.status = CaptureStatus::AllocationFailed;
         return false;
     }
 
@@ -457,8 +470,8 @@ bool InstallKnownPrologueDetour(void* target, void* replacement, void** original
 
 void ConsumeHitboxes()
 {
-    g_renderHitboxes.clear();
-    g_renderHitboxes.swap(g_pendingHitboxes);
+    g_hitbox.render.clear();
+    g_hitbox.render.swap(g_hitbox.pending);
 }
 
 bool IsReadable(const void* address, size_t size)
@@ -481,7 +494,7 @@ bool IsReadable(const void* address, size_t size)
 
 void AppendCompleteBulletPool()
 {
-    auto* manager = static_cast<const std::byte*>(g_bulletManager);
+    auto* manager = static_cast<const std::byte*>(g_hitbox.hooks.bulletManager);
     const size_t poolBytes = 8 + kBulletCount * kBulletStride;
     if (!manager || !IsReadable(manager, poolBytes))
         return;
@@ -499,8 +512,9 @@ void AppendCompleteBulletPool()
         hitbox.position = *reinterpret_cast<const Float2*>(bullet + 0x30);
         hitbox.size = *reinterpret_cast<const Float2*>(bullet + 0x5F4);
         hitbox.circular = true; // The standard bullet call site loads r9d from r12d, where r12d == 1.
-        if (IsFiniteHitbox(hitbox) && g_renderHitboxes.size() < g_renderHitboxes.capacity())
-            g_renderHitboxes.push_back(hitbox);
+        if (IsFiniteHitbox(hitbox) &&
+            g_hitbox.render.size() < g_hitbox.render.capacity())
+            g_hitbox.render.push_back(hitbox);
     }
 }
 
@@ -514,12 +528,16 @@ ScreenTransform CalculateTransform()
 {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float baseScale = std::min(display.x / 640.0f, display.y / 480.0f);
-    const float scale = std::max(0.001f, baseScale * g_scaleMultiplier);
+    const float scale = std::max(
+        0.001f, baseScale * g_hitbox.settings.scaleMultiplier);
     const ImVec2 letterbox(
         (display.x - 640.0f * baseScale) * 0.5f,
         (display.y - 480.0f * baseScale) * 0.5f);
-    ImVec2 origin(letterbox.x + g_stageOriginX * scale + g_pixelOffsetX,
-        letterbox.y + g_stageOriginY * scale + g_pixelOffsetY);
+    ImVec2 origin(
+        letterbox.x + g_hitbox.settings.stageOriginX * scale +
+            g_hitbox.settings.pixelOffsetX,
+        letterbox.y + g_hitbox.settings.stageOriginY * scale +
+            g_hitbox.settings.pixelOffsetY);
     float scaleX = scale;
     if (IsGameStretchModeEnabled()) {
         constexpr float stretch = 4.0f / 3.0f;
@@ -534,7 +552,7 @@ ScreenTransform CalculateTransform()
 
 ImVec2 ToScreen(const Float2& position, const ScreenTransform& transform)
 {
-    const float y = g_flipY ? 448.0f - position.y : position.y;
+    const float y = g_hitbox.settings.flipY ? 448.0f - position.y : position.y;
     return ImVec2(transform.origin.x + position.x * transform.scaleX,
         transform.origin.y + y * transform.scaleY);
 }
@@ -609,13 +627,13 @@ void DrawSizeLabel(ImDrawList* draw, const ImVec2& center, float top,
 bool InstallCollisionCaptureHook()
 {
     LoadHitboxConfig();
-    if (g_status == CaptureStatus::Installed)
+    if (g_hitbox.hooks.status == CaptureStatus::Installed)
         return true;
 
     auto* base = GameModuleBase();
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
     if (!base || dos->e_magic != IMAGE_DOS_SIGNATURE) {
-        g_status = CaptureStatus::UnsupportedExecutable;
+        g_hitbox.hooks.status = CaptureStatus::UnsupportedExecutable;
         return false;
     }
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
@@ -628,12 +646,12 @@ bool InstallCollisionCaptureHook()
                         kLaserCollisionPrologueSize),
                 GameRva(GameAddress::BulletManagerUpdate) + kBulletUpdatePrologueSize),
             GameRva(GameAddress::StageDrawLow) + kStageDrawPrologueSize)) {
-        g_status = CaptureStatus::UnsupportedExecutable;
+        g_hitbox.hooks.status = CaptureStatus::UnsupportedExecutable;
         return false;
     }
     
-    g_pendingHitboxes.reserve(kMaximumHitboxesPerFrame);
-    g_renderHitboxes.reserve(kMaximumHitboxesPerFrame);
+    g_hitbox.pending.reserve(kMaximumHitboxesPerFrame);
+    g_hitbox.render.reserve(kMaximumHitboxesPerFrame);
     void* updateTarget = base + GameRva(GameAddress::BulletManagerUpdate);
     void* collisionTarget = base + GameRva(GameAddress::CollisionTest);
     void* laserCollisionTarget = base + GameRva(GameAddress::LaserCollisionTest);
@@ -648,18 +666,20 @@ bool InstallCollisionCaptureHook()
 
     const bool updateInstalled = updateMatches && InstallKnownPrologueDetour(
         updateTarget, reinterpret_cast<void*>(CaptureBulletManager),
-        reinterpret_cast<void**>(&g_originalBulletUpdate), kExpectedBulletUpdatePrologue,
+        reinterpret_cast<void**>(&g_hitbox.hooks.originalBulletUpdate),
+        kExpectedBulletUpdatePrologue,
         kBulletUpdatePrologueSize);
-    g_poolHookInstalled = updateInstalled;
+    g_hitbox.hooks.poolHookInstalled = updateInstalled;
 
     const bool collisionInstalled = collisionMatches && InstallKnownPrologueDetour(
         collisionTarget, reinterpret_cast<void*>(CaptureCollision),
-        reinterpret_cast<void**>(&g_originalCollision), kExpectedCollisionPrologue,
+        reinterpret_cast<void**>(&g_hitbox.hooks.originalCollision),
+        kExpectedCollisionPrologue,
         kCollisionPrologueSize);
     const bool laserCollisionInstalled = laserCollisionMatches &&
         InstallKnownPrologueDetour(laserCollisionTarget,
             reinterpret_cast<void*>(CaptureLaserCollision),
-            reinterpret_cast<void**>(&g_originalLaserCollision),
+            reinterpret_cast<void**>(&g_hitbox.hooks.originalLaserCollision),
             kExpectedLaserCollisionPrologue, kLaserCollisionPrologueSize);
 
     const bool stageDrawHighMatches = std::memcmp(stageDrawHighTarget,
@@ -668,35 +688,37 @@ bool InstallCollisionCaptureHook()
         kExpectedStageDrawPrologue, kStageDrawPrologueSize) == 0;
     const bool stageDrawHighInstalled = stageDrawHighMatches && InstallKnownPrologueDetour(
         stageDrawHighTarget, reinterpret_cast<void*>(FilterStageDrawHigh),
-        reinterpret_cast<void**>(&g_originalStageDrawHigh), kExpectedStageDrawPrologue,
+        reinterpret_cast<void**>(&g_hitbox.hooks.originalStageDrawHigh),
+        kExpectedStageDrawPrologue,
         kStageDrawPrologueSize);
     const bool stageDrawLowInstalled = stageDrawLowMatches && InstallKnownPrologueDetour(
         stageDrawLowTarget, reinterpret_cast<void*>(FilterStageDrawLow),
-        reinterpret_cast<void**>(&g_originalStageDrawLow), kExpectedStageDrawPrologue,
+        reinterpret_cast<void**>(&g_hitbox.hooks.originalStageDrawLow),
+        kExpectedStageDrawPrologue,
         kStageDrawPrologueSize);
     if (stageDrawHighInstalled && stageDrawLowInstalled)
-        g_backgroundStatus = BackgroundStatus::Installed;
+        g_hitbox.hooks.backgroundStatus = BackgroundStatus::Installed;
     else if (!stageDrawHighMatches || !stageDrawLowMatches)
-        g_backgroundStatus = BackgroundStatus::UnsupportedExecutable;
+        g_hitbox.hooks.backgroundStatus = BackgroundStatus::UnsupportedExecutable;
     else
-        g_backgroundStatus = BackgroundStatus::PatchFailed;
+        g_hitbox.hooks.backgroundStatus = BackgroundStatus::PatchFailed;
 
     if (updateInstalled && laserCollisionInstalled)
-        g_status = CaptureStatus::Installed;
+        g_hitbox.hooks.status = CaptureStatus::Installed;
     else if (updateInstalled)
-        g_status = CaptureStatus::PoolOnly;
+        g_hitbox.hooks.status = CaptureStatus::PoolOnly;
     else if (collisionInstalled || laserCollisionInstalled)
-        g_status = CaptureStatus::CollisionFallbackOnly;
+        g_hitbox.hooks.status = CaptureStatus::CollisionFallbackOnly;
     else if (!updateMatches && !collisionMatches && !laserCollisionMatches)
-        g_status = CaptureStatus::UnsupportedExecutable;
+        g_hitbox.hooks.status = CaptureStatus::UnsupportedExecutable;
     else
-        g_status = CaptureStatus::PatchFailed;
+        g_hitbox.hooks.status = CaptureStatus::PatchFailed;
     return updateInstalled || collisionInstalled || laserCollisionInstalled;
 }
 
 const char* CollisionCaptureStatus()
 {
-    switch (g_status) {
+    switch (g_hitbox.hooks.status) {
     case CaptureStatus::Installed: return "active: full bullet pool + rotated lasers";
     case CaptureStatus::PoolOnly: return "partial: full bullet pool; laser hook unavailable";
     case CaptureStatus::CollisionFallbackOnly: return "partial: collision-call capture only";
@@ -710,7 +732,7 @@ const char* CollisionCaptureStatus()
 void DrawCapturedHitboxes()
 {
     ConsumeHitboxes();
-    if (!g_showHitboxes ||
+    if (!g_hitbox.settings.show ||
         !IsPracticeRunActive())
         return;
     AppendCompleteBulletPool();
@@ -718,15 +740,15 @@ void DrawCapturedHitboxes()
     ImDrawList* draw = ImGui::GetBackgroundDrawList();
     const ScreenTransform transform = CalculateTransform();
     const ImU32 outline = ImGui::ColorConvertFloat4ToU32(ImVec4(
-        g_hitboxColor[0], g_hitboxColor[1], g_hitboxColor[2],
-        g_hitboxColor[3]));
+        g_hitbox.settings.color[0], g_hitbox.settings.color[1],
+        g_hitbox.settings.color[2], g_hitbox.settings.color[3]));
     const ImU32 fill = ImGui::ColorConvertFloat4ToU32(ImVec4(
-        g_hitboxColor[0], g_hitboxColor[1], g_hitboxColor[2],
-        g_hitboxColor[3] * 0.20f));
+        g_hitbox.settings.color[0], g_hitbox.settings.color[1],
+        g_hitbox.settings.color[2], g_hitbox.settings.color[3] * 0.20f));
     const ImU32 center = IM_COL32(255, 255, 255, 220);
     const ImU32 labelColor = IM_COL32(255, 255, 255, 245);
 
-    for (const Hitbox& hitbox : g_renderHitboxes) {
+    for (const Hitbox& hitbox : g_hitbox.render) {
         const Float2 worldCenter = hitbox.rotated
             ? RotateAround(hitbox.position, hitbox.rotationPivot,
                 hitbox.rotation)
@@ -738,11 +760,11 @@ void DrawCapturedHitboxes()
         const float rawHalfHeight = height * 0.5f;
         const float equalityTolerance = std::max(0.01f, std::max(width, height) * 0.01f);
         const bool squareCollisionDisplay =
-            g_squareHitboxes && hitbox.circular && !hitbox.rotated;
+            g_hitbox.settings.square && hitbox.circular && !hitbox.rotated;
         const bool visuallyCircular = !squareCollisionDisplay &&
             !hitbox.rotated &&
-            (hitbox.circular || g_shapeDisplayMode == 2 ||
-                (g_shapeDisplayMode == 1 &&
+            (hitbox.circular || g_hitbox.settings.shapeDisplayMode == 2 ||
+                (g_hitbox.settings.shapeDisplayMode == 1 &&
                     std::abs(width - height) <= equalityTolerance));
         float labelTop = position.y;
         char sizeText[64]{};
@@ -751,7 +773,7 @@ void DrawCapturedHitboxes()
             const float radiusX = rawRadius * transform.scaleX;
             const float radiusY = rawRadius * transform.scaleY;
             DrawEllipse(draw, position, radiusX, radiusY, outline, fill,
-                g_fillHitboxes, g_lineThickness);
+                g_hitbox.settings.fill, g_hitbox.settings.lineThickness);
             labelTop = position.y - radiusY;
             std::snprintf(sizeText, sizeof(sizeText), "%.3f", rawRadius);
         } else {
@@ -786,10 +808,10 @@ void DrawCapturedHitboxes()
                     corners[i] = ToScreen(cornersWorld[i], transform);
                     labelTop = std::min(labelTop, corners[i].y);
                 }
-                if (g_fillHitboxes)
+                if (g_hitbox.settings.fill)
                     draw->AddConvexPolyFilled(corners, 4, fill);
                 draw->AddPolyline(corners, 4, outline,
-                    ImDrawFlags_Closed, g_lineThickness);
+                    ImDrawFlags_Closed, g_hitbox.settings.lineThickness);
             } else {
                 const ImVec2 minimum(
                     position.x - halfWidth * transform.scaleX,
@@ -797,20 +819,20 @@ void DrawCapturedHitboxes()
                 const ImVec2 maximum(
                     position.x + halfWidth * transform.scaleX,
                     position.y + halfHeight * transform.scaleY);
-                if (g_fillHitboxes)
+                if (g_hitbox.settings.fill)
                     draw->AddRectFilled(minimum, maximum, fill, 0.0f);
                 draw->AddRect(minimum, maximum, outline, 0.0f, 0,
-                    g_lineThickness);
+                    g_hitbox.settings.lineThickness);
                 labelTop = minimum.y;
             }
             std::snprintf(sizeText, sizeof(sizeText), "(%.3f,%.3f)",
                 rawHalfWidth, rawHalfHeight);
         }
 
-        if (g_showSizeLabels)
+        if (g_hitbox.settings.showSizeLabels)
             DrawSizeLabel(draw, position, labelTop, sizeText, labelColor);
 
-        if (g_showCenters) {
+        if (g_hitbox.settings.showCenters) {
             draw->AddLine(ImVec2(position.x - 3.0f, position.y), ImVec2(position.x + 3.0f, position.y), center);
             draw->AddLine(ImVec2(position.x, position.y - 3.0f), ImVec2(position.x, position.y + 3.0f), center);
         }
@@ -825,7 +847,7 @@ void DrawCapturedHitboxes()
         const float grazeRadius = playerRadius + 20.0f;
         const float grazeRadiusX = grazeRadius * transform.scaleX;
         const float grazeRadiusY = grazeRadius * transform.scaleY;
-        if (g_squareHitboxes) {
+        if (g_hitbox.settings.square) {
             draw->AddRect(
                 ImVec2(position.x - grazeRadiusX,
                     position.y - grazeRadiusY),
@@ -836,23 +858,23 @@ void DrawCapturedHitboxes()
             DrawEllipse(draw, position, grazeRadiusX, grazeRadiusY,
                 IM_COL32(255, 255, 255, 255), 0, false, 2.0f);
         }
-        if (g_squareHitboxes) {
+        if (g_hitbox.settings.square) {
             const ImVec2 minimum(position.x - radiusX, position.y - radiusY);
             const ImVec2 maximum(position.x + radiusX, position.y + radiusY);
-            if (g_fillHitboxes)
+            if (g_hitbox.settings.fill)
                 draw->AddRectFilled(minimum, maximum, fill, 0.0f);
             draw->AddRect(minimum, maximum, outline, 0.0f, 0,
-                g_lineThickness);
+                g_hitbox.settings.lineThickness);
         } else {
             DrawEllipse(draw, position, radiusX, radiusY, outline, fill,
-                g_fillHitboxes, g_lineThickness);
+                g_hitbox.settings.fill, g_hitbox.settings.lineThickness);
         }
-        if (g_showSizeLabels) {
+        if (g_hitbox.settings.showSizeLabels) {
             char sizeText[32]{};
             std::snprintf(sizeText, sizeof(sizeText), "%.1f", playerRadius);
             DrawSizeLabel(draw, position, position.y - radiusY, sizeText, labelColor);
         }
-        if (g_showCenters) {
+        if (g_hitbox.settings.showCenters) {
             draw->AddLine(ImVec2(position.x - 3.0f, position.y), ImVec2(position.x + 3.0f, position.y), center);
             draw->AddLine(ImVec2(position.x, position.y - 3.0f), ImVec2(position.x, position.y + 3.0f), center);
         }
@@ -862,120 +884,131 @@ void DrawCapturedHitboxes()
 void DrawHitboxSettingsUi()
 {
     size_t circleCount = 0;
-    for (const Hitbox& hitbox : g_renderHitboxes)
+    for (const Hitbox& hitbox : g_hitbox.render)
         circleCount += hitbox.circular ? 1u : 0u;
-    const size_t rectangleCount = g_renderHitboxes.size() - circleCount;
+    const size_t rectangleCount = g_hitbox.render.size() - circleCount;
 
     ImGui::Separator();
     ImGui::TextUnformatted("Stage visibility");
     const char* backgroundStatus = "not installed";
-    switch (g_backgroundStatus) {
+    switch (g_hitbox.hooks.backgroundStatus) {
     case BackgroundStatus::Installed: backgroundStatus = "active"; break;
     case BackgroundStatus::UnsupportedExecutable: backgroundStatus = "disabled: executable/prologue mismatch"; break;
     case BackgroundStatus::PatchFailed: backgroundStatus = "disabled: code patch failed"; break;
     default: break;
     }
     ImGui::Text("Background hook: %s", backgroundStatus);
-    bool disableStageBackground = g_disableStageBackground;
+    bool disableStageBackground = g_hitbox.settings.disableStageBackground;
     if (ImGui::Checkbox("Black stage background", &disableStageBackground))
-        g_disableStageBackground = disableStageBackground;
+        g_hitbox.settings.disableStageBackground = disableStageBackground;
 
     ImGui::Separator();
     ImGui::TextUnformatted("Bullet collision overlay");
     ImGui::Text("Capture: %s", CollisionCaptureStatus());
-    ImGui::Text("Captured this render frame: %d", static_cast<int>(g_renderHitboxes.size()));
+    ImGui::Text("Captured this render frame: %d",
+        static_cast<int>(g_hitbox.render.size()));
     ImGui::Text("Game shape flags: circle %d | rectangle %d",
         static_cast<int>(circleCount), static_cast<int>(rectangleCount));
-    bool showHitboxes = g_showHitboxes;
+    bool showHitboxes = g_hitbox.settings.show;
     if (ImGui::Checkbox("Show hitboxes", &showHitboxes))
-        g_showHitboxes = showHitboxes;
+        g_hitbox.settings.show = showHitboxes;
     ImGui::SameLine();
-    ImGui::Checkbox("Fill", &g_fillHitboxes);
-    ImGui::Checkbox("Show centers", &g_showCenters);
+    ImGui::Checkbox("Fill", &g_hitbox.settings.fill);
+    ImGui::Checkbox("Show centers", &g_hitbox.settings.showCenters);
     ImGui::SameLine();
-    ImGui::Checkbox("Show size labels", &g_showSizeLabels);
-    ImGui::Checkbox("Flip stage Y", &g_flipY);
+    ImGui::Checkbox("Show size labels", &g_hitbox.settings.showSizeLabels);
+    ImGui::Checkbox("Flip stage Y", &g_hitbox.settings.flipY);
     constexpr ImGuiColorEditFlags colorFlags =
         ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf;
-    ImGui::ColorEdit4("Hitbox color", g_hitboxColor, colorFlags);
+    ImGui::ColorEdit4("Hitbox color", g_hitbox.settings.color.data(), colorFlags);
     ImGui::TextDisabled("Outlines show raw bullet radii/half-extents without adding the player radius.");
     const char* shapeModes[] = {
         "Exact game branch",
         "Equal width/height as circle",
         "Force all as circles",
     };
-    ImGui::Combo("Display shape", &g_shapeDisplayMode, shapeModes, IM_ARRAYSIZE(shapeModes));
-    if (g_shapeDisplayMode != 0)
+    ImGui::Combo("Display shape", &g_hitbox.settings.shapeDisplayMode,
+        shapeModes, IM_ARRAYSIZE(shapeModes));
+    if (g_hitbox.settings.shapeDisplayMode != 0)
         ImGui::TextDisabled("Visualization override; collision still uses the game's original branch.");
 
     if (ImGui::TreeNode("Position calibration")) {
         ImGui::TextDisabled("Default: 640x480 reference, stage origin (128,16), pixel X +4");
-        ImGui::DragFloat("Stage origin X", &g_stageOriginX, 0.25f, -640.0f, 640.0f, "%.2f");
-        ImGui::DragFloat("Stage origin Y", &g_stageOriginY, 0.25f, -480.0f, 480.0f, "%.2f");
-        ImGui::DragFloat("Pixel offset X", &g_pixelOffsetX, 0.25f, -1000.0f, 1000.0f, "%.2f");
-        ImGui::DragFloat("Pixel offset Y", &g_pixelOffsetY, 0.25f, -1000.0f, 1000.0f, "%.2f");
-        ImGui::SliderFloat("Scale multiplier", &g_scaleMultiplier, 0.1f, 5.0f, "%.3f");
-        ImGui::SliderFloat("Line thickness", &g_lineThickness, 0.5f, 5.0f, "%.1f");
+        ImGui::DragFloat("Stage origin X", &g_hitbox.settings.stageOriginX,
+            0.25f, -640.0f, 640.0f, "%.2f");
+        ImGui::DragFloat("Stage origin Y", &g_hitbox.settings.stageOriginY,
+            0.25f, -480.0f, 480.0f, "%.2f");
+        ImGui::DragFloat("Pixel offset X", &g_hitbox.settings.pixelOffsetX,
+            0.25f, -1000.0f, 1000.0f, "%.2f");
+        ImGui::DragFloat("Pixel offset Y", &g_hitbox.settings.pixelOffsetY,
+            0.25f, -1000.0f, 1000.0f, "%.2f");
+        ImGui::SliderFloat("Scale multiplier",
+            &g_hitbox.settings.scaleMultiplier, 0.1f, 5.0f, "%.3f");
+        ImGui::SliderFloat("Line thickness",
+            &g_hitbox.settings.lineThickness, 0.5f, 5.0f, "%.1f");
         ImGui::TreePop();
     }
 }
 
 bool IsHitboxDisplayEnabled()
 {
-    return g_showHitboxes;
+    return g_hitbox.settings.show;
 }
 
 bool IsHitboxDisplayActive()
 {
-    return g_showHitboxes && IsPracticeRunActive();
+    return g_hitbox.settings.show && IsPracticeRunActive();
 }
 
 void SetHitboxDisplayEnabled(bool enabled)
 {
     LoadHitboxConfig();
-    if (g_showHitboxes == enabled)
+    if (g_hitbox.settings.show == enabled)
         return;
-    g_showHitboxes = enabled;
+    g_hitbox.settings.show = enabled;
     SaveHitboxConfig();
 }
 
 bool IsSquareHitboxModeEnabled()
 {
-    return g_squareHitboxes;
+    return g_hitbox.settings.square;
 }
 
 void SetSquareHitboxModeEnabled(bool enabled)
 {
-    if (g_squareHitboxes == enabled)
+    if (g_hitbox.settings.square == enabled)
         return;
     // Ordinary bullet graze is inlined in BulletManagerUpdate rather than
     // routed through CollisionTest. Refuse a partial mode change if this exact
     // instruction is not present in the supported executable.
     if (ApplyBulletGrazeSquarePatch(enabled))
-        g_squareHitboxes = enabled;
+        g_hitbox.settings.square = enabled;
 }
 
 void DrawHitboxDisplayControlsUi()
 {
     LoadHitboxConfig();
     bool changed = false;
-    float offset[2] = {g_pixelOffsetX, g_pixelOffsetY};
+    float offset[2] = {
+        g_hitbox.settings.pixelOffsetX, g_hitbox.settings.pixelOffsetY};
     ImGui::SetNextItemWidth(300.0f);
     if (ImGui::DragFloat2(S(HitboxOffset), offset, 0.25f,
             -1000.0f, 1000.0f, "%.2f")) {
-        g_pixelOffsetX = offset[0];
-        g_pixelOffsetY = offset[1];
+        g_hitbox.settings.pixelOffsetX = offset[0];
+        g_hitbox.settings.pixelOffsetY = offset[1];
         changed = true;
     }
     ImGui::SameLine();
     ImGui::SetNextItemWidth(180.0f);
-    changed |= ImGui::DragFloat(S(HitboxScale), &g_scaleMultiplier,
+    changed |= ImGui::DragFloat(S(HitboxScale),
+        &g_hitbox.settings.scaleMultiplier,
         0.005f, 0.1f, 5.0f, "%.3f");
 
     constexpr ImGuiColorEditFlags colorFlags =
         ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf;
     ImGui::SetNextItemWidth(420.0f);
-    changed |= ImGui::ColorEdit4(S(HitboxColor), g_hitboxColor, colorFlags);
+    changed |= ImGui::ColorEdit4(S(HitboxColor),
+        g_hitbox.settings.color.data(), colorFlags);
     if (changed)
         SaveHitboxConfig();
 }

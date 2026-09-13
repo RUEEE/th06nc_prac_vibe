@@ -62,17 +62,17 @@ struct PracticeJumpRequest {
     std::array<int, 6> bookY{};
 };
 
+using TimelineUpdateFn = int(__fastcall*)(void* enemyManager);
+using FinalSpellRageFn = void(__fastcall*)(void* enemy, void* instruction);
+
 struct PracticeJumpRuntime {
     PracticeJumpRequest pending{};
     HookStatus hookStatus = HookStatus::NotInstalled;
+    TimelineUpdateFn originalTimelineUpdate = nullptr;
+    FinalSpellRageFn originalFinalSpellRage = nullptr;
 };
 
 PracticeJumpRuntime g_practiceJumpRuntime{};
-
-using TimelineUpdateFn = int(__fastcall*)(void* enemyManager);
-TimelineUpdateFn g_originalTimelineUpdate = nullptr;
-using FinalSpellRageFn = void(__fastcall*)(void* enemy, void* instruction);
-FinalSpellRageFn g_originalFinalSpellRage = nullptr;
 
 struct PatchPair {
     size_t offset;
@@ -899,15 +899,15 @@ int __fastcall HookedTimelineUpdate(void* enemyManager)
             *reinterpret_cast<int*>(static_cast<std::byte*>(enemyManager) +
                 kEnemyManagerTimelineTime) = timelineTime;
     }
-    return g_originalTimelineUpdate(enemyManager);
+    return g_practiceJumpRuntime.originalTimelineUpdate(enemyManager);
 }
 
 void __fastcall HookedFinalSpellRage(void* enemy, void* instruction)
 {
-    if (!g_originalFinalSpellRage)
+    if (!g_practiceJumpRuntime.originalFinalSpellRage)
         return;
     if (!enemy || !IsRaging495PracticeActive()) {
-        g_originalFinalSpellRage(enemy, instruction);
+        g_practiceJumpRuntime.originalFinalSpellRage(enemy, instruction);
         return;
     }
 
@@ -917,7 +917,7 @@ void __fastcall HookedFinalSpellRage(void* enemy, void* instruction)
     auto* age = reinterpret_cast<int*>(static_cast<std::byte*>(enemy) + 4);
     const int originalAge = *age;
     *age = 7200;
-    g_originalFinalSpellRage(enemy, instruction);
+    g_practiceJumpRuntime.originalFinalSpellRage(enemy, instruction);
     *age = originalAge;
 }
 
@@ -928,7 +928,7 @@ void* AllocateNearAddress(void* target, size_t size)
     const uintptr_t targetAddress = reinterpret_cast<uintptr_t>(target);
     const uintptr_t minimum = reinterpret_cast<uintptr_t>(info.lpMinimumApplicationAddress);
     const uintptr_t maximum = reinterpret_cast<uintptr_t>(info.lpMaximumApplicationAddress);
-    const uintptr_t reach = static_cast<uintptr_t>(std::numeric_limits<int32_t>::max()) - 0x10000;
+    constexpr uintptr_t reach = static_cast<uintptr_t>(std::numeric_limits<int32_t>::max()) - 0x10000;
     const uintptr_t low = targetAddress > reach ? std::max(minimum, targetAddress - reach) : minimum;
     const uintptr_t high = std::min(maximum, targetAddress + reach);
     const uintptr_t granularity = info.dwAllocationGranularity;
@@ -991,7 +991,7 @@ bool InstallFinalSpellRageHook()
         VirtualFree(trampoline, 0, MEM_RELEASE);
         return false;
     }
-    g_originalFinalSpellRage =
+    g_practiceJumpRuntime.originalFinalSpellRage =
         reinterpret_cast<FinalSpellRageFn>(trampoline);
     WriteAbsoluteJump(target, reinterpret_cast<void*>(HookedFinalSpellRage));
     std::memset(target + 14, 0x90, kFinalSpellRagePrologueSize - 14);
@@ -1135,7 +1135,8 @@ bool InstallPracticeJumpHook()
         g_practiceJumpRuntime.hookStatus = HookStatus::PatchFailed;
         return false;
     }
-    g_originalTimelineUpdate = reinterpret_cast<TimelineUpdateFn>(trampoline);
+    g_practiceJumpRuntime.originalTimelineUpdate =
+        reinterpret_cast<TimelineUpdateFn>(trampoline);
     target[0] = 0xe9;
     *reinterpret_cast<int32_t*>(target + 1) = static_cast<int32_t>(relative);
     std::memset(target + 5, 0x90, kTimelineUpdatePrologueSize - 5);

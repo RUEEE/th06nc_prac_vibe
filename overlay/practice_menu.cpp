@@ -95,10 +95,17 @@ enum class PracticeHookStatusValue : LONG {
 };
 
 using NativeStageSelectorFn = int(__fastcall*)(void* menu, int stageCount);
-NativeStageSelectorFn g_nativeStageSelector = nullptr;
 using NativePracticeMenuTransitionFn = void(__fastcall*)(void* menu, int nextState,
     int transitionFlag);
-NativePracticeMenuTransitionFn g_nativePracticeMenuTransition = nullptr;
+using PlayerInitializeFn = int(__fastcall*)(void* player);
+using BgmLoadFn = int(__fastcall*)(void* audioState, const char* path);
+
+struct PracticeHooks {
+    NativeStageSelectorFn stageSelector = nullptr;
+    NativePracticeMenuTransitionFn menuTransition = nullptr;
+    PlayerInitializeFn playerInitialize = nullptr;
+    BgmLoadFn bgmLoad = nullptr;
+};
 
 struct PracticeRuntime {
     PracticeHookStatusValue hookStatus = PracticeHookStatusValue::NotInstalled;
@@ -119,6 +126,7 @@ struct PracticeRuntime {
 
 PracticeParam g_practiceParam{};
 PracticeRuntime g_practiceRuntime{};
+PracticeHooks g_practiceHooks{};
 
 template <typename T>
 T Exchange(T& target, T replacement)
@@ -127,11 +135,6 @@ T Exchange(T& target, T replacement)
     target = replacement;
     return previous;
 }
-
-using PlayerInitializeFn = int(__fastcall*)(void* player);
-PlayerInitializeFn g_nativePlayerInitialize = nullptr;
-using BgmLoadFn = int(__fastcall*)(void* audioState, const char* path);
-BgmLoadFn g_nativeBgmLoad = nullptr;
 
 template <typename T>
 T& MenuField(std::byte* menu, PracticeMenuField field)
@@ -233,7 +236,7 @@ int __fastcall HookedStageBgmLoad(void* audioState, const char* stageBgmPath)
     const char* selectedPath = stageBgmPath;
     if (stageBgmPath && IsMainBossPracticeSelected())
         selectedPath += kStageToBossBgmFieldOffset;
-    return g_nativeBgmLoad(audioState, selectedPath);
+    return g_practiceHooks.bgmLoad(audioState, selectedPath);
 }
 
 void QueueConfiguredPracticeJump()
@@ -422,7 +425,7 @@ int __fastcall HookedPlayerInitialize(void* player)
         QueueConfiguredPracticeJump();
     }
 
-    const int result = g_nativePlayerInitialize(player);
+    const int result = g_practiceHooks.playerInitialize(player);
     if (result != 0) {
         g_practiceRuntime.clearInitialPlayerStatePending = false;
         return result;
@@ -457,7 +460,7 @@ int __fastcall HookedPlayerInitialize(void* player)
 int __fastcall HookedPracticeMenuUi(void* rawMenu, int nativeStageCount)
 {
     auto* menu = static_cast<std::byte*>(rawMenu);
-    if (!menu || !g_nativeStageSelector)
+    if (!menu || !g_practiceHooks.stageSelector)
         return 0;
 
     const ULONGLONG now = GetTickCount64();
@@ -507,7 +510,8 @@ int __fastcall HookedPracticeMenuUi(void* rawMenu, int nativeStageCount)
     // fade timing, sound, and stage load.  Do not accept the native selector's
     // stage result: arrows now edit whichever replacement-UI row is selected.
     (void)nativeStageCount;
-    const int result = g_nativeStageSelector(menu, kMaximumKnownStageCount);
+    const int result =
+        g_practiceHooks.stageSelector(menu, kMaximumKnownStageCount);
     MenuField<int>(menu, PracticeMenuField::SelectedStage) =
         ClampStage(g_practiceParam.stage, stageCount);
 
@@ -551,8 +555,8 @@ void __fastcall HookedPracticeConfirmTransition(
     auto* menu = static_cast<std::byte*>(rawMenu);
     if (!menu || !Exchange(
             g_practiceRuntime.bypassNextPracticeConfirmation, false)) {
-        if (g_nativePracticeMenuTransition)
-            g_nativePracticeMenuTransition(rawMenu, nextState, transitionFlag);
+        if (g_practiceHooks.menuTransition)
+            g_practiceHooks.menuTransition(rawMenu, nextState, transitionFlag);
         return;
     }
 
@@ -571,8 +575,8 @@ void __fastcall HookedPracticeConfirmTransition(
     void* soundState = ResolveGameAddress<void>(GameAddress::MenuSoundState);
 
     if (!queueSound || !flushSounds || !startFade || !soundState) {
-        if (g_nativePracticeMenuTransition)
-            g_nativePracticeMenuTransition(rawMenu, nextState, transitionFlag);
+        if (g_practiceHooks.menuTransition)
+            g_practiceHooks.menuTransition(rawMenu, nextState, transitionFlag);
         return;
     }
 
@@ -605,7 +609,7 @@ void* AllocateNearAddress(void* target, size_t size)
         reinterpret_cast<uintptr_t>(info.lpMinimumApplicationAddress);
     const uintptr_t maximumApplication =
         reinterpret_cast<uintptr_t>(info.lpMaximumApplicationAddress);
-    const uintptr_t reach = static_cast<uintptr_t>(std::numeric_limits<int32_t>::max()) - 0x10000;
+    constexpr uintptr_t reach = static_cast<uintptr_t>(std::numeric_limits<int32_t>::max()) - 0x10000;
     const uintptr_t low = targetAddress > reach
         ? std::max(minimumApplication, targetAddress - reach)
         : minimumApplication;
@@ -679,7 +683,8 @@ bool PatchPlayerInitialize()
         VirtualFree(block, 0, MEM_RELEASE);
         return false;
     }
-    g_nativePlayerInitialize = reinterpret_cast<PlayerInitializeFn>(trampoline);
+    g_practiceHooks.playerInitialize =
+        reinterpret_cast<PlayerInitializeFn>(trampoline);
     target[0] = 0xE9;
     *reinterpret_cast<int32_t*>(target + 1) = static_cast<int32_t>(relative);
     std::memset(target + 5, 0x90, kPlayerInitializePrologueSize - 5);
@@ -724,7 +729,7 @@ bool PatchStageBgmLoadCall()
         VirtualFree(relay, 0, MEM_RELEASE);
         return false;
     }
-    g_nativeBgmLoad = reinterpret_cast<BgmLoadFn>(nativeLoad);
+    g_practiceHooks.bgmLoad = reinterpret_cast<BgmLoadFn>(nativeLoad);
     callSite[0] = 0xE8;
     *reinterpret_cast<int32_t*>(callSite + 1) = static_cast<int32_t>(relative);
     FlushInstructionCache(GetCurrentProcess(), callSite,
@@ -1132,7 +1137,8 @@ bool PatchStageSelectorCall()
         return false;
     }
 
-    g_nativeStageSelector = reinterpret_cast<NativeStageSelectorFn>(nativeSelector);
+    g_practiceHooks.stageSelector =
+        reinterpret_cast<NativeStageSelectorFn>(nativeSelector);
     callSite[0] = 0xE8;
     *reinterpret_cast<int32_t*>(callSite + 1) = static_cast<int32_t>(relative);
     FlushInstructionCache(GetCurrentProcess(), callSite, sizeof(kExpectedStageSelectorCall));
@@ -1179,7 +1185,7 @@ bool PatchPracticeConfirmTransitionCall()
         VirtualFree(relay, 0, MEM_RELEASE);
         return false;
     }
-    g_nativePracticeMenuTransition =
+    g_practiceHooks.menuTransition =
         reinterpret_cast<NativePracticeMenuTransitionFn>(nativeTransition);
     callSite[0] = 0xE8;
     *reinterpret_cast<int32_t*>(callSite + 1) = static_cast<int32_t>(relative);
@@ -1409,7 +1415,7 @@ bool ImportPracticeReplayConfig(const PracticeReplayConfig& config)
 
 PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
     uint32_t suppliedNavigation, bool embedded, bool navigationActive,
-    bool resetNavigation, bool resetToLast = false)
+    bool resetNavigation)
 {
     PausedPracticeUiResult interaction{};
     int mode = g_practiceParam.practiceMode;
@@ -1426,6 +1432,16 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
     int graze = g_practiceParam.graze;
     int pointItems = g_practiceParam.pointItems;
     int fakeShot = g_practiceParam.fakeShot;
+    int spellNameShot = fakeShot;
+    if (spellNameShot == 0) {
+        const auto* character =
+            ResolveGameAddress<uint8_t>(GameAddress::CurrentCharacter);
+        const auto* shotType =
+            ResolveGameAddress<uint8_t>(GameAddress::CurrentShotType);
+        if (character && shotType && *character <= 1 && *shotType <= 1)
+            spellNameShot = static_cast<int>(*character) * 2 +
+                static_cast<int>(*shotType) + 1;
+    }
     bool raging495 = g_practiceParam.raging495 != 0;
     int stage5Boss6Mode = g_practiceParam.stage5Boss6Mode;
     unsigned bookFixedMask = g_practiceParam.bookFixedMask;
@@ -1453,13 +1469,10 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
 
     if (!embedded) {
         ImGuiIO& io = ImGui::GetIO();
-        ImGui::SetNextWindowPos(ImVec2(
-                io.DisplaySize.x * (pausedEditor ? 0.98f : 0.9f),
-                io.DisplaySize.y * 0.5f),
-            ImGuiCond_Always, ImVec2(1.0f, 0.5f));
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.65f,io.DisplaySize.y * 0.5f),
+            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
         ImGui::SetNextWindowSize(
-            ImVec2(io.DisplaySize.x * 0.6f,
-                io.DisplaySize.y * (pausedEditor ? 0.90f : 0.85f)),
+            ImVec2(io.DisplaySize.x * 0.4f, io.DisplaySize.y * 0.90f),
             ImGuiCond_Always);
         ImGui::SetNextWindowBgAlpha(1.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
@@ -1476,12 +1489,8 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
         (pausedEditor ? "###paused-practice-setup" : "###practice-setup");
     if (!embedded)
         ImGui::Begin(practiceWindowTitle.c_str(), nullptr, flags);
-    if (!embedded) {
-        ImGui::TextUnformatted(S(PracticeSetup));
-        ImGui::Separator();
-    }
 
-    static int menuNavigationRow = 0;
+    static int menuNavigationRow = 1;
     static int menuNavigationRowCount = 2;
     static int pauseNavigationRow = 0;
     static int pauseNavigationRowCount = 2;
@@ -1490,8 +1499,7 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
     int& navigationRowCount = pausedEditor
         ? pauseNavigationRowCount : menuNavigationRowCount;
     if (resetNavigation)
-        navigationRow = resetToLast
-            ? std::max(navigationRowCount - 1, 0) : 0;
+        navigationRow = 0;
     const uint32_t navigation = pausedEditor
         ? suppliedNavigation
         : Exchange(g_practiceRuntime.navigationActions, uint32_t{0});
@@ -1520,9 +1528,9 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
             navigationRow == rowIndex;
         ImGui::AlignTextToFramePadding();
         if (selected)
-            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.25f, 1.0f), ">");
+            ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.25f, 1.0f), " >");
         else
-            ImGui::TextColored(ImVec4(0.0f, 0.0f, 0.0f, 0.0f), ">");
+            ImGui::TextColored(ImVec4(0.0f, 0.0f, 0.0f, 0.0f), " >");
         ImGui::SameLine();
         return selected;
     };
@@ -1537,12 +1545,15 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
             ImGui::SetScrollHereY(0.5f);
     };
 
-    const int modeRow = row++;
-    const bool modeFocused = beginRow(modeRow);
-    if (modeFocused && horizontal != 0)
-        mode = WrapSelection(mode, horizontal, IM_ARRAYSIZE(modeNames));
-    ImGui::Combo(S(Mode), &mode, modeNames, IM_ARRAYSIZE(modeNames));
-    finishRow(modeRow);
+    if (!pausedEditor)
+    {
+        const int modeRow = row++;
+        const bool modeFocused = beginRow(modeRow);
+        if (modeFocused && horizontal != 0)
+            mode = WrapSelection(mode, horizontal, IM_ARRAYSIZE(modeNames));
+        ImGui::Combo(S(Mode), &mode, modeNames, IM_ARRAYSIZE(modeNames));
+        finishRow(modeRow);
+    }
 
     const int stageCount = kMaximumKnownStageCount;
     int selectedStage = ClampStage(g_practiceParam.stage, stageCount);
@@ -1589,13 +1600,13 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
             static char chapter_desc[100] = "";
             if (chapter <= found->second.first.size()){
                 sprintf_s(chapter_desc, "%s #%d ##chapter", S(Chapter_1), chapter);
-            }else
-            {
-                sprintf_s(chapter_desc, "%s #%d ##chapter", S(Chapter_2), chapter - found->second.first.size());
+            } else {
+                sprintf_s(chapter_desc, "%s #%d ##chapter", S(Chapter_2),
+                    static_cast<int>(chapter - found->second.first.size()));
             }
             ImGui::SliderInt(S(Chapter), &chapter, 1, std::max(chapterMaximum, 1), chapter_desc);
             finishRow(chapterRow);
-            if (found != StageChapterTimes().end() && ((!found->second.first.empty() || !found->second.first.empty())))
+            if (found != StageChapterTimes().end() && ((!found->second.first.empty() || !found->second.second.empty())))
                 ImGui::TextDisabled(S(TimelineTime), GetChapterTime(selectedStage + 1,chapter));
             break;
         }
@@ -1636,7 +1647,8 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
             for (const BossJump* jump : choices) {
                 if (jump->jumpname == selectedBossJump) {
                     preview = Locale::Instance().GetJump(
-                        static_cast<int>(jump->jumpname), difficulty, fakeShot);
+                        static_cast<int>(jump->jumpname), difficulty,
+                        spellNameShot);
                     break;
                 }
             }
@@ -1645,7 +1657,8 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
                     const bool selected = jump->jumpname == selectedBossJump;
                     const char* localizedName =
                         Locale::Instance().GetJump(
-                            static_cast<int>(jump->jumpname), difficulty, fakeShot);
+                            static_cast<int>(jump->jumpname), difficulty,
+                            spellNameShot);
                     if (ImGui::Selectable(localizedName, selected))
                         selectedBossJump = jump->jumpname;
                     if (selected)
@@ -1868,7 +1881,11 @@ PausedPracticeUiResult DrawPracticeConfigurationEditorUi(bool pausedEditor,
 
     if (!pausedEditor) {
         ImGui::Separator();
-        if (ImGui::Button(S(Start), ImVec2(150.0f, 0.0f)))
+        float button_width = 150.0f;
+        float avail = ImGui::GetContentRegionAvail().x;
+        float cursor_x = ImGui::GetCursorPosX();
+        ImGui::SetCursorPosX(cursor_x + (avail - button_width) * 0.5f);
+        if (ImGui::Button(S(Start), ImVec2(button_width, 0.0f)))
             g_practiceRuntime.startRequested = true;
     }
     if (!embedded) {
@@ -1886,7 +1903,7 @@ void DrawPracticeMenuReplacementUi()
 }
 
 PausedPracticeUiResult DrawPausedPracticeConfigurationUi(int vertical,
-    int horizontal, bool focused, bool resetNavigation, bool resetToLast)
+    int horizontal, bool focused, bool resetNavigation)
 {
     uint32_t navigation = 0;
     if (vertical < 0) navigation |= kNavigateUp;
@@ -1894,5 +1911,5 @@ PausedPracticeUiResult DrawPausedPracticeConfigurationUi(int vertical,
     if (horizontal < 0) navigation |= kNavigateLeft;
     if (horizontal > 0) navigation |= kNavigateRight;
     return DrawPracticeConfigurationEditorUi(true, navigation, true,
-        focused, resetNavigation, resetToLast);
+        focused, resetNavigation);
 }

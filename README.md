@@ -4,12 +4,36 @@
 
 # th06nc_prac_vibe
 
-**版本 / Version:** 0.3.3
+**版本 / Version:** 0.3.4
 **作者 / Author:** RUEEE (GPT used)
 
 [中文](#中文说明) | [English](#english)
 
 ## 更新日志 / Changelog
+
+### 0.3.4 — 2026-09-13（9.13）
+
+- Stage 4 随机体变化符卡会根据当前机体与射击类型显示对应名称；按 ESC
+  打开练习暂停菜单时会取消自动射击。
+- 使用游戏原生 ASCII 渲染器在 HUD 的残机/Bomb 旁显示 miss 与 Bomb 使用
+  次数，文字缩放为 0.75 倍，并分别使用红色与绿色。
+- 修正逆向字段含义：`gameGui + 0x36B0` 是对话状态，`+0x4F27C4` 是无限残
+  模式标志，`+0x4F278C` 是 Replay 播放模式标志；相关判断已改用正确字段。
+- 进一步清理仅在游戏主线程使用的 atomic 全局状态，并将同一功能的状态合并
+  到结构体中。
+- 已知问题：当前自定义 ESC 菜单显示期间 BGM 仍会继续播放，后续版本再处理。
+
+- Stage 4 randomized spell names now follow the selected character and shot
+  type. Opening the practice pause menu with Escape also cancels Auto Shoot.
+- The native ASCII renderer now draws miss and Bomb-use counters beside the
+  HUD life/Bomb displays at 0.75 scale, colored red and green respectively.
+- Corrected reverse-engineered state meanings: `gameGui + 0x36B0` is dialogue
+  state, `+0x4F27C4` is infinite-lives mode, and `+0x4F278C` is replay-playback
+  mode. Dependent checks now use the appropriate fields.
+- Further consolidated single-thread global state into ordinary structs and
+  removed unnecessary atomic storage.
+- Known issue: BGM currently continues playing while the custom Escape menu is
+  open; this will be revisited in a later version.
 
 ### 0.3.3 — 2026-09-12（9.12）
 
@@ -161,6 +185,7 @@ ECL 修改前会验证关卡、文件大小和内容指纹，避免把某一面�
 - **F6 自动 Bomb：**在原版允许决死的模式中跳过 X 键边沿判断，直接进入原生决死分支；不伪造 Replay 输入。
 - **F7 永续 BGM：**使用游戏原生 `KeepBgm` 重开机制保持增强练习 BGM；退出练习时清除标志。
 - **F8 禁止丢 B：**仅移除实时游戏的 Bomb 逻辑输入，不影响菜单按键及 Replay 内已有的 Bomb。
+- 原生 HUD 的残机/Bomb 行右侧显示 miss 与 Bomb 使用次数；有限残模式补绘两者，无限残模式保留游戏已有的 miss、只补绘 Bomb。F2 锁残仍正常计数。
 
 #### ESC 与练习录像
 
@@ -341,6 +366,9 @@ Nonspell, Spell, and Frame.
   enhanced Practice and clears it on exit.
 - **F8 Disable Bomb:** removes only live logical Bomb input; menu controls and
   Bomb actions already stored in replay playback remain available.
+- The native HUD shows miss and Bomb-use counts beside the life/Bomb rows.
+  Finite-lives mode adds both; infinite-lives mode keeps the stock miss display
+  and adds only Bomb usage. F2 Lock Lives does not change this behavior.
 
 #### ESC and practice replays
 
