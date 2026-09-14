@@ -105,7 +105,13 @@ implementation, an explicit enhanced-retry ownership flag survives the native
 Practice flag's temporary reset. `KeepBgm` is set when state 12 is requested
 and reaffirmed before the common initializer; it is explicitly cleared on
 first entry, normal/native-practice initialization, save/exit, and enhanced-
-Practice exit. The custom pause menu follows the zxxsmart implementation and
+Practice exit. `BgmLoad` caches the active filename at offset `+0x29C` in its
+audio-state object. The enhanced-practice entry filename is captured there and
+compared again when retry is requested: persistence is used only while the
+active filename still matches the practice entry. Thus retrying a stage portion
+after its music has naturally changed to the Boss theme reloads the original
+stage theme instead of preserving the Boss theme. The custom pause menu follows
+the zxxsmart implementation and
 freezes gameplay by temporarily setting the native `Paused` byte around the
 game update. It does not call the audio-object stop routine directly, so closing
 the menu lets the existing stream continue instead of leaving it stopped.

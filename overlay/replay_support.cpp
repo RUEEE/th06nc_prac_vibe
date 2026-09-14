@@ -784,7 +784,8 @@ void DrawPracticePauseUi()
             58.0f, 84.0f);
         bool actionHovered = false;
         const auto drawAction = [&](int index, const char* label,
-                                    PauseAction action) {
+                                    PauseAction action) 
+       {
             ImGui::SetCursorPosX((windowSize.x - width) * 0.5f);
             const bool keyboardHighlighted = selected == index;
             if (keyboardHighlighted)
@@ -816,8 +817,8 @@ void DrawPracticePauseUi()
         const bool confirmed = Take(g_pause.confirm);
         if (!settingsFocused && confirmed && selected < 4) {
             constexpr PauseAction actions[] = {
-                PauseAction::Resume, PauseAction::Restart,
-                PauseAction::SaveAndExit, PauseAction::ExitWithoutReplay};
+                PauseAction::Resume, PauseAction::ExitWithoutReplay,
+                PauseAction::SaveAndExit, PauseAction::Restart };
             g_pause.action = actions[selected];
         }
         if (settingsFocused && confirmed) {

@@ -92,7 +92,6 @@ enum class GameAddress : uintptr_t {
     MenuSoundPendingFlag = 0x509668,     // Pending sound transition flag.
     MenuSoundSpecialFlag = 0x50967C,     // Selects the alternate sound transition path.
     BgmHandle = 0x50966C,                // Active BGM audio handle, or -1.
-    BgmCurrentPath = 0xC21C0C,           // Current BGM path cached by BgmLoad.
     ReplayPath = 0x4FF164,               // Native replay path selected by the replay menu.
     AsciiManager = 0x3DE620,              // Native ASCII renderer object (not a pointer).
     AsciiIntegerFormat = 0x30947C,        // Native "%d" format string.

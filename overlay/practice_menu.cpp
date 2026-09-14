@@ -73,6 +73,7 @@ constexpr unsigned char kExpectedPlayerStateDispatchRead[7] = {
 constexpr ptrdiff_t kPlayerStateOffset = 0x7898;
 constexpr ptrdiff_t kPlayerStateTimerOffset = 0x7858;
 constexpr ptrdiff_t kStageToBossBgmFieldOffset = 0x80;
+constexpr ptrdiff_t kBgmCurrentPathOffset = 0x29C;
 constexpr ULONGLONG kMenuHeartbeatTimeoutMs = 350;
 constexpr int kMaximumKnownStageCount = 7;
 constexpr uint32_t kMenuConfirmMask = 0x100; // Z / menu-confirm bit.
@@ -121,6 +122,8 @@ struct PracticeRuntime {
     bool restartBgmCompatible = false;
     int runningStage = 0;
     bool runningBossBgm = false;
+    void* bgmAudioState = nullptr;
+    std::string initialBgmPath;
     bool clearInitialPlayerStatePending = false;
 };
 
@@ -236,7 +239,18 @@ int __fastcall HookedStageBgmLoad(void* audioState, const char* stageBgmPath)
     const char* selectedPath = stageBgmPath;
     if (stageBgmPath && IsMainBossPracticeSelected())
         selectedPath += kStageToBossBgmFieldOffset;
-    return g_practiceHooks.bgmLoad(audioState, selectedPath);
+    const int result = g_practiceHooks.bgmLoad(audioState, selectedPath);
+    if (audioState && IsActiveEnhancedPracticeRun()) {
+        // BgmLoad stores the normalized path it actually opened at +0x29C.
+        // Keep this practice entry path so retry can tell whether gameplay has
+        // since switched from the stage track to the Boss track.
+        const auto* currentPath = reinterpret_cast<const char*>(
+            static_cast<const std::byte*>(audioState) + kBgmCurrentPathOffset);
+        g_practiceRuntime.bgmAudioState = audioState;
+        g_practiceRuntime.initialBgmPath = currentPath && *currentPath
+            ? currentPath : (selectedPath ? selectedPath : "");
+    }
+    return result;
 }
 
 void QueueConfiguredPracticeJump()
@@ -535,6 +549,8 @@ int __fastcall HookedPracticeMenuUi(void* rawMenu, int nativeStageCount)
             g_practiceRuntime.enhancedSessionActive = enhanced;
             g_practiceRuntime.enhancedInitialLoadPending = enhanced;
             g_practiceRuntime.clearInitialPlayerStatePending = false;
+            g_practiceRuntime.bgmAudioState = nullptr;
+            g_practiceRuntime.initialBgmPath.clear();
             // Both Original and Enhanced selections use the replacement UI;
             // bypass the native second confirmation for either mode.
             g_practiceRuntime.bypassNextPracticeConfirmation = true;
@@ -1315,6 +1331,8 @@ void EndEnhancedPracticeRun()
     g_practiceRuntime.enhancedInitialLoadPending = false;
     g_practiceRuntime.enhancedRestartPending = false;
     g_practiceRuntime.clearInitialPlayerStatePending = false;
+    g_practiceRuntime.bgmAudioState = nullptr;
+    g_practiceRuntime.initialBgmPath.clear();
     if (auto* practiceFlag =
             ResolveGameAddress<uint8_t>(GameAddress::PracticeModeFlag))
         *practiceFlag = 0;
@@ -1324,9 +1342,19 @@ bool MarkEnhancedPracticeRestartPending()
 {
     if (!g_practiceRuntime.enhancedSessionActive)
         return false;
+    bool currentBgmMatchesEntry = false;
+    if (g_practiceRuntime.bgmAudioState &&
+        !g_practiceRuntime.initialBgmPath.empty()) {
+        const auto* currentPath = reinterpret_cast<const char*>(
+            static_cast<const std::byte*>(g_practiceRuntime.bgmAudioState) +
+            kBgmCurrentPathOffset);
+        currentBgmMatchesEntry = currentPath &&
+            g_practiceRuntime.initialBgmPath == currentPath;
+    }
     const bool compatible =
         g_practiceRuntime.runningStage == g_practiceParam.stage &&
-        g_practiceRuntime.runningBossBgm == IsMainBossJumpSelected();
+        g_practiceRuntime.runningBossBgm == IsMainBossJumpSelected() &&
+        currentBgmMatchesEntry;
     g_practiceRuntime.restartBgmCompatible = compatible;
     g_practiceRuntime.enhancedRestartPending = true;
     if (auto* stage = ResolveGameAddress<int>(GameAddress::CurrentStage))
@@ -1409,6 +1437,8 @@ bool ImportPracticeReplayConfig(const PracticeReplayConfig& config)
     g_practiceRuntime.enhancedSessionActive = true;
     g_practiceRuntime.enhancedInitialLoadPending = true;
     g_practiceRuntime.clearInitialPlayerStatePending = false;
+    g_practiceRuntime.bgmAudioState = nullptr;
+    g_practiceRuntime.initialBgmPath.clear();
     ClearQueuedPracticeJump();
     QueueConfiguredPracticeJump();
     return true;

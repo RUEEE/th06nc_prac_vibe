@@ -22,6 +22,11 @@
   `%APPDATA%\shanghaialice\th06nc\log.txt`，便于保留闪退前的最后信息。
 - 修正练习资源初始化：score 会同步写入实际值与当前渲染值，point items 改用
   正确地址。
+- 修复永续 BGM 在道中推进至 Boss 后重试会错误保留 Boss 曲目的问题：现在会
+  记录练习开局曲目，并与音频状态中的当前曲目比较；只有两者一致时才在重试时
+  保留 BGM，否则恢复练习起点应播放的曲目。
+- 修复 ESC 菜单相关问题。
+- 修复 Stage 4 符卡被放置到错误位置的问题。
 
 - Added compatibility with the Special K D3D11 proxy. With Special K loaded,
   the overlay waits for and hooks its real game swap chain instead of creating
@@ -36,6 +41,12 @@
 - Corrected practice resource initialization: both the authoritative and
   rendered score values are updated, and point items now use the correct
   address.
+- Fixed Persistent BGM retaining the Boss theme after retrying a stage portion
+  that had naturally advanced to the Boss. Retry now preserves music only when
+  the audio state's current track still matches the practice-entry track;
+  otherwise it reloads the track appropriate for the practice start.
+- Fixed issues in the Escape menu.
+- Fixed Stage 4 spell cards being placed at incorrect positions.
 
 ### 0.3.4 — 2026-09-13（9.13）
 
