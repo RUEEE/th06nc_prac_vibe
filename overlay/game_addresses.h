@@ -109,6 +109,12 @@ enum class GameAddress : uintptr_t {
     NextGameState = 0xC21D9C,            // Requested supervisor state transition.
     PausedFlag = 0x4F27B0,               // Native gameplay pause flag.
     GameOverFlag = 0x4F27B1,             // Native game-over transition flag.
+
+    IsInSpellCard           = 0xBADF60,
+    IsInSpellPracticeMode   = 0x4F27B5,
+    SpellCardInfo           = 0x4F27C8,
+    SpellCardId             = 0xBADF68,
+
 };
 
 // Fields inside the native main-menu object passed at +0x4BFB2.

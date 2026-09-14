@@ -399,6 +399,52 @@ void DrawNativePracticeCounters(void* hud)
     asciiState->scaleX = previousScaleX;
     asciiState->scaleY = previousScaleY;
     asciiState->color = previousColor;
+
+    // spell history
+    // IsInSpellCard = 0xBADF60,
+    // IsInSpellPracticeMode = 0x4F27B5,
+    // SpellCardInfo = 0x4F27C8,
+    if (*ResolveGameAddress<bool>(GameAddress::IsInSpellCard))
+    {
+        int spellid = *ResolveGameAddress<int>(GameAddress::SpellCardId);
+        int* spellcardhis = (ResolveGameAddress<int>(GameAddress::SpellCardInfo)) + (96 * spellid);
+
+        int attempt = 0;
+        int captured = 0;
+        if (*ResolveGameAddress<bool>(GameAddress::IsInSpellPracticeMode))
+        {
+            int offset =
+                (*ResolveGameAddress<unsigned __int8>(GameAddress::CurrentShotType))
+                + 2 * (*ResolveGameAddress<unsigned __int8>(GameAddress::CurrentCharacter))
+                + 4 * (*ResolveGameAddress<unsigned __int8>(GameAddress::CurrentDifficulty));
+            attempt = spellcardhis[offset + 0x38];
+            captured = spellcardhis[offset + 0x4C];
+        } else {
+            attempt = *(reinterpret_cast<short*>(spellcardhis) + 30);
+            captured = *(reinterpret_cast<short*>(spellcardhis) + 31);
+        }
+        constexpr NativeFloat3 spell_his_position{ 522.0f, 48.0, 0.49f };
+        constexpr float kCounterScale = 0.5f;
+        float playerY = ResolveGameAddress<float>(GameAddress::PlayerPosition)[1];
+        uint32_t spellcard_color = 0xFFFFFFFF;
+        if(playerY < 100.0f)
+            spellcard_color = 0x50FFFFFF;
+        const float previousScaleX = asciiState->scaleX;
+        const float previousScaleY = asciiState->scaleY;
+        const uint32_t previousColor = asciiState->color;
+        asciiState->scaleX *= kCounterScale;
+        asciiState->scaleY *= kCounterScale;
+        asciiState->color = spellcard_color;
+
+        char temp[32];
+        char buf[32];
+        sprintf_s(temp, "%d/%d", captured, attempt);
+        asciiPrintf(asciiState, &spell_his_position, "%10s", temp);
+        asciiState->scaleX = previousScaleX;
+        asciiState->scaleY = previousScaleY;
+        asciiState->color = previousColor;
+    }
+  
 }
 
 void __fastcall HookedHudDraw(void* hud)
