@@ -69,9 +69,10 @@ enum class GameAddress : uintptr_t {
     PracticeModeFlag = 0x4F27B4,         // Nonzero while a native Practice run is active.
     NativeSpellPracticeFlag = 0x4F27B5,  // Nonzero only for the game's own spell practice.
     CurrentSpellId = 0x4F27B8,           // Native spell-practice target ID.
-    CurrentPointItems = 0x4F27BC,        // Current point items, stored as a 16-bit value.
+    CurrentPointItems = 0x4F27BA,        // Current point items, stored as a 16-bit value.
     CurrentDifficulty = 0x4F27C0,        // Active difficulty index; Extra is 4.
     InfiniteLivesModeFlag = 0x4F27C4,    // Nonzero in the game's native infinite-lives mode.
+    CurrentRenderScore = 0x4F2790,       //
     CurrentScore = 0x4F2798,             // Current score, stored as a 64-bit value.
     CurrentGraze = 0x4FF0CC,             // Current graze, stored as a 32-bit value.
     CurrentLives = 0x4FF0F0,             // Current lives byte.

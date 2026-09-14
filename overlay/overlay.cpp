@@ -85,6 +85,7 @@ D3D9PresentFn g_realD3D9Present = nullptr;
 D3D9ResetFn g_realD3D9Reset = nullptr;
 
 SRWLOCK g_uiLock = SRWLOCK_INIT;
+SRWLOCK g_debugLogLock = SRWLOCK_INIT;
 // OverlayWorker polls this while the Present hook publishes initialization.
 std::atomic<Renderer> g_renderer{Renderer::None};
 
@@ -120,6 +121,7 @@ bool g_diagnosticConsoleReady = false;
 bool g_debugConfigurationLoaded = false;
 bool g_debugEnabled = false;
 std::wstring g_configurationPath;
+HANDLE g_debugLogFile = INVALID_HANDLE_VALUE;
 LONG g_presentHookObserved = 0;
 LONG g_presentIdleReported = 0;
 LONG g_presentRenderRequested = 0;
@@ -160,6 +162,27 @@ void LoadDebugConfiguration()
     WritePrivateProfileStringW(L"Options", L"StretchMode",
         g_overlayUi.gameStretchEnabled ? L"1" : L"0", path.c_str());
     g_debugConfigurationLoaded = true;
+}
+
+void InitializeDiagnosticFile()
+{
+    if (!g_debugEnabled || g_configurationPath.empty() ||
+        g_debugLogFile != INVALID_HANDLE_VALUE)
+        return;
+    const size_t separator = g_configurationPath.find_last_of(L"\\/");
+    if (separator == std::wstring::npos)
+        return;
+    const std::wstring path =
+        g_configurationPath.substr(0, separator + 1) + L"log.txt";
+    g_debugLogFile = CreateFileW(path.c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH, nullptr);
+    if (g_debugLogFile == INVALID_HANDLE_VALUE)
+        return;
+    constexpr unsigned char bom[] = {0xEF, 0xBB, 0xBF};
+    DWORD written = 0;
+    WriteFile(g_debugLogFile, bom, sizeof(bom), &written, nullptr);
+    FlushFileBuffers(g_debugLogFile);
 }
 
 BOOL WINAPI DiagnosticConsoleControlHandler(DWORD)
@@ -216,6 +239,23 @@ void DebugMessage(const wchar_t* text)
     OutputDebugStringW(L"[th06nc_test] ");
     OutputDebugStringW(text);
     OutputDebugStringW(L"\n");
+    if (g_debugLogFile != INVALID_HANDLE_VALUE) {
+        const std::wstring wide = std::wstring(L"[th06nc_test] ") + text + L"\r\n";
+        const int byteCount = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(),
+            static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+        if (byteCount > 0) {
+            std::string utf8(static_cast<size_t>(byteCount), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, wide.c_str(),
+                static_cast<int>(wide.size()), utf8.data(), byteCount,
+                nullptr, nullptr);
+            AcquireSRWLockExclusive(&g_debugLogLock);
+            DWORD written = 0;
+            WriteFile(g_debugLogFile, utf8.data(),
+                static_cast<DWORD>(utf8.size()), &written, nullptr);
+            FlushFileBuffers(g_debugLogFile);
+            ReleaseSRWLockExclusive(&g_debugLogLock);
+        }
+    }
     if (g_diagnosticConsoleReady) {
         const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD written = 0;
@@ -1329,22 +1369,16 @@ FARPROC WINAPI HookGetProcAddress(HMODULE module, LPCSTR name)
     if (!real || !name || reinterpret_cast<uintptr_t>(name) <= 0xFFFF)
         return real;
 
-    if (std::strcmp(name, "CreateDXGIFactory") == 0) {
-        g_realCreateDXGIFactory = reinterpret_cast<CreateDXGIFactoryFn>(real);
-        return reinterpret_cast<FARPROC>(HookCreateDXGIFactory);
-    }
-    if (std::strcmp(name, "CreateDXGIFactory1") == 0) {
-        g_realCreateDXGIFactory1 = reinterpret_cast<CreateDXGIFactoryFn>(real);
-        return reinterpret_cast<FARPROC>(HookCreateDXGIFactory1);
-    }
-    if (std::strcmp(name, "CreateDXGIFactory2") == 0) {
-        g_realCreateDXGIFactory2 = reinterpret_cast<CreateDXGIFactory2Fn>(real);
-        return reinterpret_cast<FARPROC>(HookCreateDXGIFactory2);
-    }
-    if (std::strcmp(name, "D3D11CreateDevice") == 0) {
-        g_realD3D11CreateDevice = reinterpret_cast<D3D11CreateDeviceFn>(real);
-        return reinterpret_cast<FARPROC>(HookD3D11CreateDevice);
-    }
+    // D3D11 uses one Present function-entry hook. Returning factory/device
+    // wrappers here as well would make HookSwapChain patch the same Present a
+    // second time and can turn g_realSwapChainPresent into a recursive call.
+    // RecoverAlreadyResolvedExports remains the fallback when the normal
+    // function-entry discovery hook cannot be installed.
+    if (std::strcmp(name, "CreateDXGIFactory") == 0 ||
+        std::strcmp(name, "CreateDXGIFactory1") == 0 ||
+        std::strcmp(name, "CreateDXGIFactory2") == 0 ||
+        std::strcmp(name, "D3D11CreateDevice") == 0)
+        return real;
     if (std::strcmp(name, "Direct3DCreate9") == 0) {
         g_realDirect3DCreate9 = reinterpret_cast<Direct3DCreate9Fn>(real);
         return reinterpret_cast<FARPROC>(HookDirect3DCreate9);
@@ -1383,6 +1417,62 @@ void RecoverAlreadyResolvedExports()
         static_cast<Direct3DCreate9Fn>(HookDirect3DCreate9));
     HookLoadedExport(L"d3d9.dll", "Direct3DCreate9Ex", g_realDirect3DCreate9Ex,
         static_cast<Direct3DCreate9ExFn>(HookDirect3DCreate9Ex));
+}
+
+bool IsSpecialKD3D11ProxyLoaded()
+{
+    const HMODULE d3d11 = GetModuleHandleW(L"d3d11.dll");
+    if (!d3d11 || !g_realGetProcAddress)
+        return false;
+    return g_realGetProcAddress(d3d11, "SK_Render_GetAPIHookMask") != nullptr ||
+        g_realGetProcAddress(d3d11,
+            "?SK_Render_GetSwapChain@@YAPEAUIUnknown@@XZ") != nullptr;
+}
+
+bool InstallSpecialKPresentHook()
+{
+    using GetSwapChainFn = IUnknown*(*)();
+    const HMODULE d3d11 = GetModuleHandleW(L"d3d11.dll");
+    if (!d3d11 || !g_realGetProcAddress)
+        return false;
+    const auto getSwapChain = reinterpret_cast<GetSwapChainFn>(
+        g_realGetProcAddress(d3d11,
+            "?SK_Render_GetSwapChain@@YAPEAUIUnknown@@XZ"));
+    if (!getSwapChain)
+        return false;
+    IUnknown* unknown = getSwapChain();
+    if (!unknown)
+        return false;
+    IDXGISwapChain* swapChain = nullptr;
+    const HRESULT result = unknown->QueryInterface(IID_PPV_ARGS(&swapChain));
+    if (FAILED(result) || !swapChain)
+        return false;
+    void** vtable = *reinterpret_cast<void***>(swapChain);
+    void* presentEntry = vtable ? vtable[8] : nullptr;
+    void* resizeEntry = vtable ? vtable[13] : nullptr;
+    bool installed = false;
+    if (presentEntry && resizeEntry) {
+        const MH_STATUS initialized = MH_Initialize();
+        if (initialized == MH_OK || initialized == MH_ERROR_ALREADY_INITIALIZED) {
+            const MH_STATUS presentCreated = MH_CreateHook(presentEntry,
+                reinterpret_cast<void*>(HookSwapChainPresent),
+                reinterpret_cast<void**>(&g_realSwapChainPresent));
+            const MH_STATUS resizeCreated = MH_CreateHook(resizeEntry,
+                reinterpret_cast<void*>(HookSwapChainResizeBuffers),
+                reinterpret_cast<void**>(&g_realSwapChainResizeBuffers));
+            const MH_STATUS presentEnabled =
+                (presentCreated == MH_OK || presentCreated == MH_ERROR_ALREADY_CREATED)
+                    ? MH_EnableHook(presentEntry) : presentCreated;
+            const MH_STATUS resizeEnabled =
+                (resizeCreated == MH_OK || resizeCreated == MH_ERROR_ALREADY_CREATED)
+                    ? MH_EnableHook(resizeEntry) : resizeCreated;
+            installed = g_realSwapChainPresent && g_realSwapChainResizeBuffers &&
+                (presentEnabled == MH_OK || presentEnabled == MH_ERROR_ENABLED) &&
+                (resizeEnabled == MH_OK || resizeEnabled == MH_ERROR_ENABLED);
+        }
+    }
+    swapChain->Release();
+    return installed;
 }
 
 } // namespace
@@ -1482,18 +1572,37 @@ bool InstallBootstrapHook()
 DWORD WINAPI OverlayWorker(void*)
 {
     LoadDebugConfiguration();
+    InitializeDiagnosticFile();
     if (IsOverlayDebugEnabled())
         InitializeDiagnosticConsole();
     DebugMessage(L"Overlay worker started");
+    const bool specialK = IsSpecialKD3D11ProxyLoaded();
     InstallPracticeJumpHook();
     InstallPracticeMenuHook();
     InstallKeyboardInputHook();
     InstallGameOverlayHook();
     InstallReplaySupportHooks();
     InstallCollisionCaptureHook();
-    InstallD3D11PresentDiscoveryHook();
+    bool d3d11EntryHookInstalled = false;
+    if (specialK) {
+        // Do not create a hidden device through the Special K proxy. Wait for
+        // its real game swap chain, then chain its already-initialized Present
+        // entry with a trampoline instead of overwriting the shared vtable.
+        DebugMessage(L"Special K D3D11 proxy detected; using cooperative swap-chain hook mode");
+    } else {
+        d3d11EntryHookInstalled = InstallD3D11PresentDiscoveryHook();
+    }
+    bool specialKHookInstalled = false;
     for (int i = 0; i < 400 && g_renderer.load() == Renderer::None; ++i) {
-        RecoverAlreadyResolvedExports();
+        if (specialK) {
+            if (!specialKHookInstalled) {
+                specialKHookInstalled = InstallSpecialKPresentHook();
+                if (specialKHookInstalled)
+                    DebugMessage(L"Special K Present hook installed");
+            }
+        } else if (!d3d11EntryHookInstalled) {
+            RecoverAlreadyResolvedExports();
+        }
         Sleep(25);
     }
 

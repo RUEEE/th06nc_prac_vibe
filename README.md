@@ -4,12 +4,38 @@
 
 # th06nc_prac_vibe
 
-**版本 / Version:** 0.3.4
+**版本 / Version:** 0.3.5
 **作者 / Author:** RUEEE (GPT used)
 
 [中文](#中文说明) | [English](#english)
 
 ## 更新日志 / Changelog
+
+### 0.3.5 — 2026-09-14（9.14）
+
+- 增加对 Special K D3D11 代理的兼容：检测到 Special K 时等待并挂接其实际
+  游戏交换链，避免创建额外的代理设备；无 Special K 时继续使用独立的
+  `Present` 入口挂接。
+- 修复普通 D3D11 路径同时挂接函数入口与交换链 vtable 所造成的递归调用和
+  `0xc00000fd` 栈溢出；旧导入表方案现在仅作为入口挂接失败时的回退。
+- `debug=1` 时除诊断终端外，也会将 UTF-8 日志实时写入
+  `%APPDATA%\shanghaialice\th06nc\log.txt`，便于保留闪退前的最后信息。
+- 修正练习资源初始化：score 会同步写入实际值与当前渲染值，point items 改用
+  正确地址。
+
+- Added compatibility with the Special K D3D11 proxy. With Special K loaded,
+  the overlay waits for and hooks its real game swap chain instead of creating
+  an extra device through the proxy; the standalone `Present` entry hook
+  remains in use without Special K.
+- Fixed recursive D3D11 hooking and the resulting `0xc00000fd` stack overflow
+  when running without Special K. The legacy import-table path is now only a
+  fallback if the entry hook cannot be installed.
+- With `debug=1`, UTF-8 diagnostics are now flushed to
+  `%APPDATA%\shanghaialice\th06nc\log.txt` in addition to the console, retaining
+  the final messages before a crash.
+- Corrected practice resource initialization: both the authoritative and
+  rendered score values are updated, and point items now use the correct
+  address.
 
 ### 0.3.4 — 2026-09-13（9.13）
 

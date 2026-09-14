@@ -292,6 +292,7 @@ void ApplyConfiguredPracticeResources()
     auto* initialLives = ResolveGameAddress<uint8_t>(GameAddress::InitialLivesBackup);
     auto* initialBombs = ResolveGameAddress<uint8_t>(GameAddress::InitialBombsBackup);
     auto* score = ResolveGameAddress<int64_t>(GameAddress::CurrentScore);
+    auto* score2 = ResolveGameAddress<int64_t>(GameAddress::CurrentRenderScore);
     auto* power = ResolveGameAddress<uint16_t>(GameAddress::CurrentPower);
     auto* graze = ResolveGameAddress<int32_t>(GameAddress::CurrentGraze);
     auto* pointItems = ResolveGameAddress<uint16_t>(GameAddress::CurrentPointItems);
@@ -299,7 +300,7 @@ void ApplyConfiguredPracticeResources()
     if (bombs) *bombs = static_cast<uint8_t>(g_practiceParam.bombs);
     if (initialLives) *initialLives = static_cast<uint8_t>(g_practiceParam.lives);
     if (initialBombs) *initialBombs = static_cast<uint8_t>(g_practiceParam.bombs);
-    if (score) *score = g_practiceParam.score;
+    if (score) *score = * score2 = g_practiceParam.score;
     if (power) *power = static_cast<uint16_t>(g_practiceParam.power);
     if (graze) *graze = g_practiceParam.graze;
     if (pointItems)
