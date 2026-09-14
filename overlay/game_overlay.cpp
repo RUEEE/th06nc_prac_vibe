@@ -1,6 +1,6 @@
 #include "game_overlay.h"
 
-#include "books.h"
+#include "spell_rate.h"
 #include "game_addresses.h"
 #include "keyboard_input.h"
 #include "locale.h"
@@ -448,8 +448,10 @@ void DrawNativePracticeCounters(void* hud)
             attempt = spellcardhis[offset + 0x38];
             captured = spellcardhis[offset + 0x4C];
         } else {
-            attempt = *(reinterpret_cast<short*>(spellcardhis) + 30);
-            captured = *(reinterpret_cast<short*>(spellcardhis) + 31);
+            const SpellRate& rate = GetSpellRate(spellid,
+                CurrentSpellRateShot());
+            attempt = rate.attempt;
+            captured = rate.captured;
         }
         DrawNativeCaptureRate(asciiPrintf, asciiState, captured, attempt,522,48);
     }
@@ -491,10 +493,11 @@ void DrawNativePracticeCounters(void* hud)
             asciiState->color = labelPreviousColor;
             if (books.activeShot >= 0 && books.activeShot < 4 &&
                 books.activeDifficulty >= 0 && books.activeDifficulty < 4) {
+                const SpellRate& rate = GetSpellRate(
+                    kBooksSpellBase + books.activeDifficulty,
+                    books.activeShot);
                 DrawNativeCaptureRate(asciiPrintf, asciiState,
-                    books.passCount[books.activeShot][books.activeDifficulty],
-                    books.attemptCount[books.activeShot][books.activeDifficulty],
-                    522 + 30, 48 - 10);
+                    rate.captured, rate.attempt, 522 + 30, 48 - 10);
             }
         }
     }

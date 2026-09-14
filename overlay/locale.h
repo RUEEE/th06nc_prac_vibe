@@ -139,6 +139,12 @@ enum class LocaleText {
     StatusPatchFailed,
     StatusNotInstalled,
     StatusPracticePartial,
+    SpellRateTable,
+    SpellId,
+    SpellName,
+    Captured,
+    Attempt,
+    Percent,
 };
 
 struct LocalizedText {

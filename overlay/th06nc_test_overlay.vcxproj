@@ -87,7 +87,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="books.cpp" />
+    <ClCompile Include="spell_rate.cpp" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="game_addresses.cpp" />
     <ClCompile Include="game_overlay.cpp" />
@@ -122,7 +122,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\version.h" />
-    <ClInclude Include="books.h" />
+    <ClInclude Include="spell_rate.h" />
     <ClInclude Include="d3d11_shaders.h" />
     <ClInclude Include="game_addresses.h" />
     <ClInclude Include="game_overlay.h" />

@@ -7,6 +7,7 @@
 #include "overlay.h"
 #include "practice_menu.h"
 #include "replay_support.h"
+#include "spell_rate.h"
 #include "imgui.h"
 
 #include <windows.h>
@@ -21,7 +22,7 @@ void DrawPracticeBaseUi(const char* rendererName)
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.8f);
+    ImGui::SetNextWindowBgAlpha(0.95f);
     constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoCollapse |
         ImGuiWindowFlags_NoSavedSettings;
@@ -108,6 +109,7 @@ void DrawPracticeBaseUi(const char* rendererName)
                 static_cast<double>(*timerFrequency) / gameSpeedPlaceholder + 0.5);
     }
     DrawKeyBindingUi();
+    DrawSpellRateTableUi();
 
     ImGui::NewLine();
     ImGui::NewLine();

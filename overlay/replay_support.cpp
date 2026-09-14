@@ -1,6 +1,6 @@
 #include "replay_support.h"
 
-#include "books.h"
+#include "spell_rate.h"
 #include "game_addresses.h"
 #include "game_overlay.h"
 #include "keyboard_input.h"

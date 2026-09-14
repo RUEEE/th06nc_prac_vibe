@@ -48,6 +48,17 @@ enum class GameAddress : uintptr_t {
     LivesGameOverBranch = 0x68E6F,       // jg skips the game-over flag when lives remain.
     LivesDecrement = 0x68E86,            // dec al before CurrentLives is stored.
 
+    SpellAttemptAfterIncrement = 0x27B8E,// Branch after the native normal-play attempt increment.
+    SpellAttemptContinuation = 0x25D7D,  // Common continuation after the attempt update.
+    SpellCaptureStore = 0x27CF3,         // Native normal-play captured-count store.
+    SpellCaptureContinuation = 0x27CFC,  // Continuation after the captured-count store.
+    SpellListRateRead = 0x51D92,         // Reads the native attempt count in the spell list.
+    SpellListRateReadContinuation = 0x51D97,
+    SpellListRateFormatCall = 0x51E7B,   // Formats the spell-list capture rate.
+    SpellResultRateRead = 0x730D1,       // Reads the native attempt count on the result screen.
+    SpellResultRateReadContinuation = 0x730DA,
+    SpellResultRateDrawCall = 0x73106,   // Draws the result-screen capture rate.
+
     PracticeStageSelectorCall = 0x4BFB2, // CALL used by the native Practice stage menu.
     PracticeStageSelector = 0x4D1F0,     // Native up/down stage selector routine.
     PracticeConfirmTransitionCall = 0x4C183, // Enters the native two-step confirmation screen.

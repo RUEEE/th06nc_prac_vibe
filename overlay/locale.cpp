@@ -235,6 +235,12 @@ Locale::Locale()
         {LocaleText::StatusPatchFailed, L("已禁用：代码补丁失败", "disabled: code patch failed", "無効：コードパッチに失敗")},
         {LocaleText::StatusNotInstalled, L("未安装", "not installed", "未導入")},
         {LocaleText::StatusPracticePartial, L("部分启用：确认/UI/资源 Hook 不可用", "partial: confirmation/native UI/resource hook unavailable", "一部有効：確認・UI・リソースHookが利用不可")},
+        {LocaleText::SpellRateTable, L("符卡收率表", "Spell capture rates", "スペルカード取得率")},
+        {LocaleText::SpellId, L("符卡 ID", "Spell ID", "スペル ID")},
+        {LocaleText::SpellName, L("名称", "Name", "名称")},
+        {LocaleText::Captured, L("收取", "Captured", "取得")},
+        {LocaleText::Attempt, L("尝试", "Attempts", "挑戦")},
+        {LocaleText::Percent, L("收率", "Percent", "取得率")},
     };
 
     auto add = [&](JumpEnum key, D names) {
@@ -345,6 +351,29 @@ Locale::Locale()
     same(TH06NC_ST7_BOSS19, L("LSC 1", "LSC 1", "LSC 1"));
     same(TH06NC_ST7_BOSS20, L("LSC 2", "LSC 2", "LSC 2"));
     same(TH06NC_ST7_BOSS21, L("LSC 3", "LSC 3", "LSC 3"));
+
+    same(TH06NC_BOOKS, L("魔法书", "BOOKS", "BOOKS"));
+
+    const auto& fakeShotNames = FakeShotSpellNames();
+    same(TH06NC_FIRE_1,       fakeShotNames[0]);
+    same(TH06NC_FIRE_2,       fakeShotNames[1]);
+    same(TH06NC_FIRE_3,       fakeShotNames[2]);
+    same(TH06NC_WOOD_1,       fakeShotNames[3]);
+    same(TH06NC_WOOD_2,       fakeShotNames[4]);
+    same(TH06NC_WOOD_3,       fakeShotNames[5]);
+    same(TH06NC_EARTH_1,      fakeShotNames[6]);
+    same(TH06NC_EARTH_2,      fakeShotNames[7]);
+    same(TH06NC_EARTH_3,      fakeShotNames[8]);
+    same(TH06NC_WATER_1,      fakeShotNames[9]);
+    same(TH06NC_WATER_2,      fakeShotNames[10]);
+    same(TH06NC_METAL_1,      fakeShotNames[11]);
+    same(TH06NC_METAL_2,      fakeShotNames[12]);
+    same(TH06NC_FIRE_EARTH,   fakeShotNames[13]);
+    same(TH06NC_WATER_WOOD,   fakeShotNames[14]);
+    same(TH06NC_WOOD_FIRE,    fakeShotNames[15]);
+    same(TH06NC_EARTH_METAL,  fakeShotNames[16]);
+    same(TH06NC_METAL_WATER,  fakeShotNames[17]);
+
 }
 
 Language Locale::GetLanguage() const noexcept

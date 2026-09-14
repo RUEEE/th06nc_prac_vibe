@@ -1,6 +1,6 @@
 #include "practice_jump.h"
 
-#include "books.h"
+#include "spell_rate.h"
 #include "game_addresses.h"
 #include "locale.h"
 #include "practice_menu.h"
@@ -175,7 +175,7 @@ J(BOSS_NONSPELL, TH06NC_ST4_BOSS3, 4, kMainDifficulties),
 J(BOSS_SPELL, TH06NC_ST4_BOSS4, 4, kMainDifficulties),
 J(BOSS_SPELL, TH06NC_ST4_BOSS5, 4, kMainDifficulties),
 J(BOSS_SPELL, TH06NC_ST4_BOSS6, 4, kMainDifficulties),
-J(BOSS_SPELL, TH06NC_ST4_BOSS7, 4, kMainDifficulties),
+J(BOSS_SPELL, TH06NC_ST4_BOSS7, 4, 12),
 
 J(MID_BOSS_NONSPELL, TH06NC_ST5_MID1, 5, kMainDifficulties),
 J(MID_BOSS_SPELL, TH06NC_ST5_MID2, 5, kMainDifficulties),

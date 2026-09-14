@@ -4,12 +4,38 @@
 
 # th06nc_prac_vibe
 
-**版本 / Version:** 0.4.0
+**版本 / Version:** 0.4.1
 **作者 / Author:** RUEEE (GPT used)
 
 [中文](#中文说明) | [English](#english)
 
 ## 更新日志 / Changelog
+
+### 0.4.1 — 2026-09-15（9.15）
+
+- 新增按机体独立统计的符卡收率系统。普通游戏在保留原版总收率的同时，按
+  ReimuA、ReimuB、MarisaA、MarisaB 分别记录 134 张符卡的尝试与收取次数。
+- 符卡收率与四组按难度区分的 Stage 4 魔法书收率统一存入
+  `%APPDATA%\shanghaialice\th06nc\spell_capture.dat`；文件包含版本字段，当前
+  格式版本为 1。首次创建时会迁移旧 `[Books]` 配置。
+- 原生游戏内两处收率显示扩展为“当前机体收率（原版总收率）”，练习器 HUD
+  和魔法书 HUD 也读取统一后的机体收率。
+- F9–F12 全屏菜单新增符卡收率表，可按 E/N/H/L/EX 难度以及 RA/RB/MA/MB
+  机体筛选，并显示本地化名称、收取数、尝试数和百分比。符卡信息表目前保留
+  为便于继续手工补全的稀疏数组。
+
+- Added per-shot spell capture statistics. Normal play now records attempts
+  and captures separately for ReimuA, ReimuB, MarisaA, and MarisaB across the
+  134 native spell IDs while preserving the game's aggregate counters.
+- Spell rates and the four difficulty-specific Stage 4 Books rates are stored
+  together in `%APPDATA%\shanghaialice\th06nc\spell_capture.dat`. The binary
+  format begins with version 1 and migrates the former `[Books]` data when the
+  file is first created.
+- Both native rate displays now show `current shot (native aggregate)` rates;
+  the practice HUD and Books HUD use the unified per-shot data as well.
+- The F9–F12 panel now contains a spell-rate table filtered by E/N/H/L/EX and
+  RA/RB/MA/MB tabs, showing localized names, captures, attempts, and percentage.
+  Its sparse spell-information array is intentionally ready for manual filling.
 
 ### 0.4.0 — 2026-09-14（9.14）
 
@@ -230,6 +256,8 @@ ECL 修改前会验证关卡、文件大小和内容指纹，避免把某一面�
 - 界面按窗口高度自动缩放，以 1440 高度对应 2.5x 为基准。
 - 中文、英文、日文切换；默认语言根据系统代码页选择。
 - 显示统一版本号和默认折叠的许可证/第三方声明。
+- 内置按难度与机体筛选的符卡收率表；数据来自独立的
+  `spell_capture.dat`，并显示符卡 ID、本地化名称、收取、尝试和百分比。
 - 自动射击：V 切换，按下当前绑定的射击/Bomb 键或 V 取消；`Shift+D` 可开启功能。
 - 可在全屏菜单中分别重绑上、下、左、右、低速、射击和 Bomb；支持下拉列表与“选择按键”直接捕获。
 - 重试、直接退出和菜单确认键也可修改（默认 R、Q、Enter）；确认键写入与 Z 相同的原生菜单确认位，但不会触发射击。
@@ -388,6 +416,9 @@ Nonspell, Spell, and Frame.
 - UI scaling follows window height, using 2.5x at 1440 pixels as the reference.
 - Chinese, English, and Japanese localization with system-code-page default.
 - Shared version display and a collapsed licenses/third-party section.
+- Includes a difficulty/shot-filtered spell-rate table backed by
+  `spell_capture.dat`, with spell ID, localized name, captures, attempts, and
+  percentage columns.
 - Auto-shoot has a configurable toggle key (V by default), with `Shift+D`
   enable shortcut and top-left `A` indicator. Generated shooting remains
   replay-compatible.
