@@ -1,5 +1,6 @@
 #include "replay_support.h"
 
+#include "books.h"
 #include "game_addresses.h"
 #include "game_overlay.h"
 #include "keyboard_input.h"
@@ -496,7 +497,7 @@ DWORD WINAPI FinishPracticeReplaySave(void* rawRequest)
 int64_t __fastcall HookedGameUpdate(void* game)
 {
     if (!g_replay.nativeGameUpdate)
-        return g_replay.nativeGameUpdate(game);
+        return 0;
     g_pause.wasVisible = g_pause.visible;
 
     const auto* replay = ResolveGameAddress<uint8_t>(GameAddress::ReplayModeFlag);
@@ -512,6 +513,16 @@ int64_t __fastcall HookedGameUpdate(void* game)
     const auto* gameOver = ResolveGameAddress<uint8_t>(GameAddress::GameOverFlag);
     auto* input = ResolveGameAddress<uint32_t>(GameAddress::MenuInputCurrent);
     auto* previous = ResolveGameAddress<uint32_t>(GameAddress::MenuInputPrevious);
+    const auto runNativeUpdate = [&]() {
+        const int64_t result = g_replay.nativeGameUpdate(game);
+        // This hook owns every gameplay mode, not only Enhanced Practice.
+        // Any transition away from the stable in-game state abandons an
+        // unfinished Books attempt (native retry, exit, game over, etc.).
+        if (!currentState || !nextState ||
+            *currentState != 2 || *nextState != 2)
+            ResetBooksAttempt();
+        return result;
+    };
     const bool canOwnPause = IsEnhancedPracticeRunActive() &&
         (!replay || *replay == 0) && currentState && nextState &&
         *currentState == 2 && *nextState == 2;
@@ -519,7 +530,7 @@ int64_t __fastcall HookedGameUpdate(void* game)
     if (!canOwnPause) {
         g_pause.visible = false;
         g_pause.action = PauseAction::None;
-        return g_replay.nativeGameUpdate(game);
+        return runNativeUpdate();
     }
 
     if (!g_pause.visible && paused && (!gameOver || *gameOver == 0) &&
@@ -533,7 +544,7 @@ int64_t __fastcall HookedGameUpdate(void* game)
     }
 
     if (!g_pause.visible)
-        return g_replay.nativeGameUpdate(game);
+        return runNativeUpdate();
 
     // Capture logical menu input on the game-update thread, before the native
     // paused callback advances current/previous state. The renderer may run
@@ -573,9 +584,10 @@ int64_t __fastcall HookedGameUpdate(void* game)
             // Match zxx exactly: the custom menu only freezes the game through
             // PausedFlag. It must not call the native audio stop path directly;
             // clearing the temporary flag lets the stream continue naturally.
-            return g_replay.nativeGameUpdate(game);
+            return runNativeUpdate();
         }
         if (action == PauseAction::SaveAndExit) {
+            ResetBooksAttempt();
             PrepareEverlastingBgmForInitialization(false);
             *nextState = 7;
             return 3;
@@ -599,7 +611,7 @@ int64_t __fastcall HookedGameUpdate(void* game)
     }
 
     if (!paused)
-        return g_replay.nativeGameUpdate(game);
+        return runNativeUpdate();
     // Do not let the same Escape edge enter the game's own Pause state while
     // this overlay owns it. Keeping current/previous equal preserves every
     // other logical input bit and works for keyboard and controller alike.
@@ -607,7 +619,7 @@ int64_t __fastcall HookedGameUpdate(void* game)
         *previous |= kEscapeInput;
     const uint8_t oldPaused = *paused;
     *paused = 1;
-    const int64_t result = g_replay.nativeGameUpdate(game);
+    const int64_t result = runNativeUpdate();
     *paused = oldPaused;
     return result;
 }

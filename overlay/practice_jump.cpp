@@ -1,5 +1,6 @@
 #include "practice_jump.h"
 
+#include "books.h"
 #include "game_addresses.h"
 #include "locale.h"
 #include "practice_menu.h"
@@ -899,6 +900,7 @@ int __fastcall HookedTimelineUpdate(void* enemyManager)
             *reinterpret_cast<int*>(static_cast<std::byte*>(enemyManager) +
                 kEnemyManagerTimelineTime) = timelineTime;
     }
+    ObserveBooksTimeline(enemyManager);
     return g_practiceJumpRuntime.originalTimelineUpdate(enemyManager);
 }
 

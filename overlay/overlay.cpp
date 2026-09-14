@@ -1,4 +1,6 @@
 #include "overlay.h"
+
+#include "books.h"
 #include "d3d11_shaders.h"
 #include "game_addresses.h"
 #include "game_overlay.h"
@@ -1577,6 +1579,7 @@ DWORD WINAPI OverlayWorker(void*)
         InitializeDiagnosticConsole();
     DebugMessage(L"Overlay worker started");
     const bool specialK = IsSpecialKD3D11ProxyLoaded();
+    InitializeBooksTracking();
     InstallPracticeJumpHook();
     InstallPracticeMenuHook();
     InstallKeyboardInputHook();

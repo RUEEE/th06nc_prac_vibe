@@ -1,5 +1,6 @@
 #include "game_overlay.h"
 
+#include "books.h"
 #include "game_addresses.h"
 #include "keyboard_input.h"
 #include "locale.h"
@@ -357,6 +358,33 @@ struct NativeAsciiState {
 
 static_assert(offsetof(NativeAsciiState, color) == 0x52CC);
 
+void DrawNativeCaptureRate(AsciiPrintfFn asciiPrintf,
+    NativeAsciiState* asciiState, int captured, int attempts,float x,float y)
+{
+    NativeFloat3 position{x, y, 0.49f};
+    constexpr float kCaptureScale = 0.5f;
+    const auto* playerPosition = ResolveGameAddress<float>(
+        GameAddress::PlayerPosition);
+    uint32_t color = 0xFFFFFFFF;
+    if (playerPosition && playerPosition[1] < 100.0f)
+        color = 0x50FFFFFF;
+
+    const float previousScaleX = asciiState->scaleX;
+    const float previousScaleY = asciiState->scaleY;
+    const uint32_t previousColor = asciiState->color;
+    asciiState->scaleX *= kCaptureScale;
+    asciiState->scaleY *= kCaptureScale;
+    asciiState->color = color;
+
+    char text[32]{};
+    sprintf_s(text, "%d/%d", captured, attempts);
+    asciiPrintf(asciiState, &position, "%10s", text);
+
+    asciiState->scaleX = previousScaleX;
+    asciiState->scaleY = previousScaleY;
+    asciiState->color = previousColor;
+}
+
 void DrawNativePracticeCounters(void* hud)
 {
     auto asciiPrintf = reinterpret_cast<AsciiPrintfFn>(
@@ -423,28 +451,53 @@ void DrawNativePracticeCounters(void* hud)
             attempt = *(reinterpret_cast<short*>(spellcardhis) + 30);
             captured = *(reinterpret_cast<short*>(spellcardhis) + 31);
         }
-        constexpr NativeFloat3 spell_his_position{ 522.0f, 48.0, 0.49f };
-        constexpr float kCounterScale = 0.5f;
-        float playerY = ResolveGameAddress<float>(GameAddress::PlayerPosition)[1];
-        uint32_t spellcard_color = 0xFFFFFFFF;
-        if(playerY < 100.0f)
-            spellcard_color = 0x50FFFFFF;
-        const float previousScaleX = asciiState->scaleX;
-        const float previousScaleY = asciiState->scaleY;
-        const uint32_t previousColor = asciiState->color;
-        asciiState->scaleX *= kCounterScale;
-        asciiState->scaleY *= kCounterScale;
-        asciiState->color = spellcard_color;
-
-        char temp[32];
-        char buf[32];
-        sprintf_s(temp, "%d/%d", captured, attempt);
-        asciiPrintf(asciiState, &spell_his_position, "%10s", temp);
-        asciiState->scaleX = previousScaleX;
-        asciiState->scaleY = previousScaleY;
-        asciiState->color = previousColor;
+        DrawNativeCaptureRate(asciiPrintf, asciiState, captured, attempt,522,48);
     }
-  
+    else
+    {
+        const BooksInfo& books = GetBooksInfo();
+        if (books.isInBooks)
+        {
+            constexpr NativeFloat3 position{ 524.0f + 30, 30.0f - 10, 0.49f };
+            constexpr float kCaptureScale = 1.0f;
+            const auto* playerPosition = ResolveGameAddress<float>(
+                GameAddress::PlayerPosition);
+            uint32_t color = 0xFFFFFFFF;
+            if (playerPosition && playerPosition[1] < 100.0f)
+                color = 0x50FFFFFF;
+
+            const auto* currentMisses =
+                ResolveGameAddress<int32_t>(GameAddress::MissCount);
+            const auto* currentBombs =
+                ResolveGameAddress<int32_t>(GameAddress::BombUseCount);
+            const bool passed = currentMisses && currentBombs &&
+                *currentMisses <= books.lastMiss &&
+                *currentBombs <= books.lastBomb;
+            if (!passed)
+            {
+                color &= 0xFFFF8080;
+            }
+
+            const float labelPreviousScaleX = asciiState->scaleX;
+            const float labelPreviousScaleY = asciiState->scaleY;
+            const uint32_t labelPreviousColor = asciiState->color;
+            asciiState->scaleX *= kCaptureScale;
+            asciiState->scaleY *= kCaptureScale;
+            asciiState->color = color;
+            asciiPrintf(asciiState, &position, "Books");
+
+            asciiState->scaleX = labelPreviousScaleX;
+            asciiState->scaleY = labelPreviousScaleY;
+            asciiState->color = labelPreviousColor;
+            if (books.activeShot >= 0 && books.activeShot < 4 &&
+                books.activeDifficulty >= 0 && books.activeDifficulty < 4) {
+                DrawNativeCaptureRate(asciiPrintf, asciiState,
+                    books.passCount[books.activeShot][books.activeDifficulty],
+                    books.attemptCount[books.activeShot][books.activeDifficulty],
+                    522 + 30, 48 - 10);
+            }
+        }
+    }
 }
 
 void __fastcall HookedHudDraw(void* hud)

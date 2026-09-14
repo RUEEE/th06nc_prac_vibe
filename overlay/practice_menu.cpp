@@ -1,5 +1,6 @@
 #include "practice_menu.h"
 
+#include "books.h"
 #include "game_addresses.h"
 #include "game_overlay.h"
 #include "keyboard_input.h"
@@ -551,6 +552,7 @@ int __fastcall HookedPracticeMenuUi(void* rawMenu, int nativeStageCount)
             g_practiceRuntime.clearInitialPlayerStatePending = false;
             g_practiceRuntime.bgmAudioState = nullptr;
             g_practiceRuntime.initialBgmPath.clear();
+            ResetBooksAttempt();
             // Both Original and Enhanced selections use the replacement UI;
             // bypass the native second confirmation for either mode.
             g_practiceRuntime.bypassNextPracticeConfirmation = true;
@@ -1326,6 +1328,7 @@ bool IsEnhancedPracticeRunActive()
 
 void EndEnhancedPracticeRun()
 {
+    ResetBooksAttempt();
     PrepareEverlastingBgmForInitialization(false);
     g_practiceRuntime.enhancedSessionActive = false;
     g_practiceRuntime.enhancedInitialLoadPending = false;
@@ -1342,6 +1345,7 @@ bool MarkEnhancedPracticeRestartPending()
 {
     if (!g_practiceRuntime.enhancedSessionActive)
         return false;
+    ResetBooksAttempt();
     bool currentBgmMatchesEntry = false;
     if (g_practiceRuntime.bgmAudioState &&
         !g_practiceRuntime.initialBgmPath.empty()) {
@@ -1439,6 +1443,7 @@ bool ImportPracticeReplayConfig(const PracticeReplayConfig& config)
     g_practiceRuntime.clearInitialPlayerStatePending = false;
     g_practiceRuntime.bgmAudioState = nullptr;
     g_practiceRuntime.initialBgmPath.clear();
+    ResetBooksAttempt();
     ClearQueuedPracticeJump();
     QueueConfiguredPracticeJump();
     return true;

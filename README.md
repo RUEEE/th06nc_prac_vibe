@@ -4,12 +4,40 @@
 
 # th06nc_prac_vibe
 
-**版本 / Version:** 0.3.5
+**版本 / Version:** 0.4.0
 **作者 / Author:** RUEEE (GPT used)
 
 [中文](#中文说明) | [English](#english)
 
 ## 更新日志 / Changelog
+
+### 0.4.0 — 2026-09-14（9.14）
+
+- 新增 Stage 4“魔法书”难点的自动收率统计：进入难点时记录一次尝试以及当前
+  miss/Bomb 使用次数，结束时仅在两者均未增加的情况下记录一次通过。
+- 按 `shotType + character * 2` 区分 ReimuA、ReimuB、MarisaA、MarisaB，
+  并按 Easy、Normal、Hard、Lunatic 分组，共维护 16 组独立的通过/尝试数据。
+- 32 个统计值以可读字段写入
+  `%APPDATA%\shanghaialice\th06nc\input.ini` 的 `[Books]` 段，允许人工查看
+  和修改。
+- 魔法书进行期间使用游戏原生 ASCII 渲染器显示当前机体、当前难度对应的
+  `通过数/尝试数`；失败后标签会同步变色。
+- 实战与练习中的重试、退出、Game Over、状态切换、换面和 timeline 回退均会
+  清除未完成的魔法书尝试状态，避免跨局误判。
+
+- Added automatic capture-rate tracking for the Stage 4 Books section. An
+  attempt snapshots the current miss and Bomb-use counters, and is captured
+  only if neither counter has increased when the section ends.
+- Statistics are separated by `shotType + character * 2` (ReimuA, ReimuB,
+  MarisaA, and MarisaB) and by Easy, Normal, Hard, and Lunatic, producing 16
+  independent captured/attempted pairs.
+- All 32 editable values are stored under `[Books]` in
+  `%APPDATA%\shanghaialice\th06nc\input.ini`.
+- While Books is active, the native ASCII renderer displays the rate for the
+  current shot and difficulty, with the label changing color after a failed
+  attempt.
+- Restart, exit, Game Over, supervisor transitions, stage changes, and timeline
+  rewinds in both regular play and practice discard any unfinished Books state.
 
 ### 0.3.5 — 2026-09-14（9.14）
 
